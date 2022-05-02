@@ -1,0 +1,166 @@
+﻿/*RWStructuredBuffer<float2> leftEdgeEnds;
+RWStructuredBuffer<float2> rightEdgeEnds;
+RWStructuredBuffer<float4> tex;
+float3 transform;
+float ppu;
+uint2 spriteBound;
+#pragma kernel VoronoiFracture
+
+[numthreads(16,1,1)]
+void VoronoiFracture (uint3 id : SV_DispatchThreadID)
+{
+    int edgeIndex = id.x;
+    float2 worldPos = float2(transform.x, transform.y);
+    float rotation = transform.z;
+    float2 diffInPosLeft = leftEdgeEnds[edgeIndex] - worldPos;
+    float angleLeft = atan2(diffInPosLeft.y, diffInPosLeft.x) - rotation;
+    float magLeft = sqrt(pow(diffInPosLeft.x, 2) + pow(diffInPosLeft.y, 2));
+    diffInPosLeft = float2(magLeft * cos(angleLeft), magLeft * sin(angleLeft));
+    float2 pixelPosLeft = diffInPosLeft * ppu * 0.8;
+    pixelPosLeft = float2(pixelPosLeft.x + spriteBound.x/2, pixelPosLeft.y + spriteBound.y/2);
+    float2 diffInPosRight = rightEdgeEnds[edgeIndex] - worldPos;
+    float angleRight = atan2(diffInPosRight.y, diffInPosRight.x) - rotation;
+    float magRight = sqrt(pow(diffInPosRight.x, 2) + pow(diffInPosRight.y, 2));
+    diffInPosRight = float2(magRight * cos(angleRight), magRight * sin(angleRight));
+    float2 pixelPosRight = diffInPosRight * ppu * 0.8;
+    pixelPosRight = float2(pixelPosRight.x + (spriteBound.x/2), pixelPosRight.y + (spriteBound.y/2));
+    int x0 = (int)pixelPosLeft.x;
+    int y0 = (int)pixelPosLeft.y;
+    int x1 = (int)pixelPosRight.x;
+    int y1 = (int)pixelPosRight.y;
+   
+    int dx = abs(x1-x0);
+    int dy = abs(y1-y0);
+    int sx = x0 < x1 ? 1 : -1;
+    int sy = y0 < y1 ? 1 : -1;
+    int err = dx-dy;
+    while (true) {
+        if(x0 >= 0 && x0 < spriteBound.x && y0 >= 0 && y0 < spriteBound.y)
+            tex[(y0 * spriteBound.x + x0)] = float4(0.0,0.0,0.0,0.0);
+            
+        
+
+        
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2*err;
+        if (e2 > -dy) {
+            err -= dy;
+            x0 += sx;
+        }
+        if (e2 < dx) {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}*/
+RWStructuredBuffer<float4> textureColors;
+RWStructuredBuffer<float2> leftEdgeEnds;
+RWStructuredBuffer<float2> rightEdgeEnds;
+RWStructuredBuffer<float3> transforms;
+RWStructuredBuffer<float2> scales;
+RWStructuredBuffer<float> ppus;
+RWStructuredBuffer<uint2> spriteBounds;
+RWTexture2DArray<float4> outputTex;
+RWTexture2D<float> hasBeenDrawnTex;
+Texture2D<float4> inputTex;
+float pi = 3.141592;
+float resolutionFactor;
+int totalObjects;
+int longestHeight;
+int longestWidth;
+int totalEdges;
+
+float dist(float2 point1, float2 point2)
+{
+    return sqrt(((point1.x - point2.x) * (point1.x - point2.x)) + ((point1.x - point2.y) * (point1.y - point2.y)));
+}
+
+#pragma kernel VoronoiFracture
+
+[numthreads(8,8,1)]
+void VoronoiFracture (uint3 id : SV_DispatchThreadID)
+{
+    int objectIndex = id.x;
+    int edgeIndex = id.y;
+    if(objectIndex >= totalObjects || edgeIndex >= totalEdges)
+    {
+        return;
+    }
+    float2 worldPos = float2(transforms[objectIndex].x, transforms[objectIndex].y);
+    float rotation = transforms[objectIndex].z;
+    float2 diffInPosLeft = leftEdgeEnds[edgeIndex] - worldPos;
+    float angleLeft = atan2(diffInPosLeft.y, diffInPosLeft.x) - rotation;
+    float magLeft = sqrt(pow(diffInPosLeft.x, 2) + pow(diffInPosLeft.y, 2));
+    diffInPosLeft = float2(magLeft * cos(angleLeft) * (1/scales[objectIndex].x), magLeft * sin(angleLeft) * (1/scales[objectIndex].y));
+    float2 pixelPosLeft = diffInPosLeft * ppus[objectIndex];
+    pixelPosLeft = float2(pixelPosLeft.x + spriteBounds[objectIndex].x/2, pixelPosLeft.y + spriteBounds[objectIndex].y/2);
+    float2 diffInPosRight = rightEdgeEnds[edgeIndex] - worldPos;
+    float angleRight = atan2(diffInPosRight.y, diffInPosRight.x) - rotation;
+    float magRight = sqrt(pow(diffInPosRight.x, 2) + pow(diffInPosRight.y, 2));
+    diffInPosRight = float2(magRight * cos(angleRight) * (1/scales[objectIndex].x), magRight * sin(angleRight) * (1/scales[objectIndex].y));
+    float2 pixelPosRight = diffInPosRight * ppus[objectIndex];
+    pixelPosRight = float2(pixelPosRight.x + (spriteBounds[objectIndex].x/2), pixelPosRight.y + (spriteBounds[objectIndex].y/2));
+    int x0 = (int)pixelPosLeft.x;
+    int y0 = (int)pixelPosLeft.y;
+    int x1 = (int)pixelPosRight.x;
+    int y1 = (int)pixelPosRight.y;
+   
+    int dx = abs(x1-x0);
+    int dy = abs(y1-y0);
+    int sx = x0 < x1 ? 1 : -1;
+    int sy = y0 < y1 ? 1 : -1;
+    int err = dx-dy;
+    while (true) {
+        
+        if(x0 >= 0 && x0 < spriteBounds[objectIndex].x && y0 >= 0 && y0 < spriteBounds[objectIndex].y)
+        {
+            int xDiff = x0 % (1/resolutionFactor);
+            int yDiff = y0 % (1/resolutionFactor);
+            for(int x = -xDiff;x < (1/resolutionFactor) - xDiff;x++)
+            {
+                for(int y = -yDiff;y < (1/resolutionFactor) - yDiff;y++)
+                {
+                    int ind = (y0 + y) * spriteBounds[objectIndex].x + (x0 + x);
+                    uint _y = (ind/longestWidth);
+                    uint _x = ind % longestWidth;
+                    //(longestHeight * totalObjects - (longestHeight * (objectIndex + 1))) + (longestHeight - spriteBounds[objectIndex].y)
+                    float4 col = outputTex[uint3((x0 + x), (y0 + y), objectIndex)];
+                    if(col.a != 0.0)
+                    {
+                        hasBeenDrawnTex[uint2(objectIndex, 0)] = float((1)/65535.0);
+                    }
+                    outputTex[uint3((x0 + x), (y0 + y), objectIndex)] = float4(0.0,0.0,0.0,0.0);
+                }
+            }
+            /*for(int x = 0;x < (1/resolutionFactor);x++)
+            {
+                for(int y = 0;y < (1/resolutionFactor);y++)
+                {
+                    outputTex[uint2(x0 + x, y0 + y + longestHeight * objectIndex)] = float4(0.0,0.0,0.0,0.0);
+                }
+            }*/
+        }
+        
+
+        
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2*err;
+        if (e2 > -dy) {
+            err -= dy;
+            x0 += sx;
+        }
+        if (e2 < dx) {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}
+
+#pragma kernel ApplyTexture
+
+[numthreads(32,32,1)]
+void ApplyTexture (uint3 id : SV_DispatchThreadID)
+{
+    outputTex[id.xyz] = inputTex[id.xy];
+    //outputTex[id.xy] = textureColors[uint(id.y * longestWidth + id.x)];
+}
