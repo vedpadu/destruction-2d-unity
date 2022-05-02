@@ -1236,8 +1236,8 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!58 &2032124668
-CircleCollider2D:
+--- !u!60 &2032124668
+PolygonCollider2D:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
@@ -1250,8 +1250,27 @@ CircleCollider2D:
   m_UsedByEffector: 0
   m_UsedByComposite: 0
   m_Offset: {x: 0, y: 0}
-  serializedVersion: 2
-  m_Radius: 3.3333333
+  m_SpriteTilingProperty:
+    border: {x: 0, y: 0, z: 0, w: 0}
+    pivot: {x: 0.5, y: 0.5}
+    oldSize: {x: 12.222222, y: 5.185185}
+    newSize: {x: 3.3, y: 1.4}
+    adaptiveTilingThreshold: 0.5
+    drawMode: 0
+    adaptiveTiling: 0
+  m_AutoTiling: 0
+  m_Points:
+    m_Paths:
+    - - {x: -5.9074073, y: -2.3888888}
+      - {x: -4.648148, y: -2.3888888}
+      - {x: -4.240741, y: 1.0185184}
+      - {x: 1.574074, y: 1.2777777}
+      - {x: 4.5, y: 1.1666666}
+      - {x: 4.685185, y: -2.3148148}
+      - {x: 5.9074073, y: -2.3888888}
+      - {x: 5.9074073, y: 2.3888888}
+      - {x: -5.9074073, y: 2.3888888}
+      - {x: -5.9074073, y: -1.9444444}
 --- !u!114 &2032124669
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1356,7 +1375,7 @@ SpriteRenderer:
   m_SortingLayerID: 0
   m_SortingLayer: 0
   m_SortingOrder: 0
-  m_Sprite: {fileID: 21300000, guid: 51256824da7a0be4cb45e59142f6b97e, type: 3}
+  m_Sprite: {fileID: 21300000, guid: ac13f09dc99ba9646a21781cb37ce521, type: 3}
   m_Color: {r: 1, g: 1, b: 1, a: 1}
   m_FlipX: 0
   m_FlipY: 0
@@ -1376,7 +1395,7 @@ Transform:
   m_GameObject: {fileID: 2032124667}
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 4.5, y: 5.3, z: 0}
-  m_LocalScale: {x: 3, y: 3, z: 0.5}
+  m_LocalScale: {x: 1.5, y: 1.5, z: 0.5}
   m_Children: []
   m_Father: {fileID: 0}
   m_RootOrder: 8
