@@ -18,7 +18,7 @@ public class mouseScript : MonoBehaviour
         {
             double start = Time.realtimeSinceStartup;
             var pos = Camera.main.ScreenToWorldPoint(Input.mousePosition);
-            ObjectFracturer.DoVoronoiBreak((Vector2) pos , 3f, 0.5f, 5f, Random.Range(5,10), 1);
+            ObjectFracturer.DoVoronoiBreak((Vector2) pos , 1f, 0.5f, 1f, Random.Range(5,10), 1);
             print("voronoi time" + ": " + (Time.realtimeSinceStartup - start));
             debug = ObjectFracturer.debugTexArray;
         }

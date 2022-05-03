@@ -152,14 +152,12 @@ MonoBehaviour:
   texWidth: 0
   texHeight: 0
   sR: {fileID: 0}
-  prefab: {fileID: 5809718025201641366}
-  quadToRenderVoronoi: {fileID: 0}
-  txPixels: []
-  txBytes: 
+  destroyedPrefab: {fileID: 5809718025201641366}
+  pixelData: []
+  pixelDataTextureWidth: 0
   debugTexture: {fileID: 0}
   debugQuad: {fileID: 0}
-  polygonTextures: {fileID: 0}
-  pixelCountsResults: 
-  isOrig: 1
   dirty: 0
-  controller: 0
+  resolutionFactorDecimal: 0
+  pixelCount: 0
+  distanceThreshold: 0

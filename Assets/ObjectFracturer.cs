@@ -1,10 +1,5 @@
 ﻿using System;
-using System.Collections;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 using csDelaunay;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -14,43 +9,50 @@ public class ObjectFracturer : MonoBehaviour
 {
     private static ComputeShader voronoiFractureShader = Resources.Load<ComputeShader>("VoronoiFractureShader");
     private static int kiVoronoiFractureKernel = voronoiFractureShader.FindKernel("VoronoiFracture");
-    private static int kiApplyTexture = voronoiFractureShader.FindKernel("ApplyTexture");
     public static Texture2DArray debugTexArray;
         
-    public static void DoVoronoiBreak(Vector2 origin, float blastRadius, LayerMask lM)
+    public static void DoVoronoiBreak(Vector2 origin, float blastRadius, LayerMask lM, float force, float density, float shatterCount, int lloydRelaxation)
     {
         Collider2D[] allObjects = Physics2D.OverlapCircleAll(origin, blastRadius, lM);
+        if (allObjects.Length == 0)
+        {
+            return;
+        }
+        RunVoronoiBreakage(allObjects, origin, blastRadius, force, density, shatterCount, lloydRelaxation);
     }
     
     //TODO: force is a misnomer, its actually point scale
     public static void DoVoronoiBreak(Vector2 origin, float blastRadius, float force, float density, float shatterCount, int lloydRelaxation)
     {
-        float overlapCircleTime = Time.realtimeSinceStartup;
+        //runs an overlap circle to detect the objects we are going to destroy.
         Collider2D[] allObjects = Physics2D.OverlapCircleAll(origin, blastRadius);
         if (allObjects.Length == 0)
         {
             return;
         }
-        overlapCircleTime = Time.realtimeSinceStartup - overlapCircleTime;
-        float voronoiTime = Time.realtimeSinceStartup;
+        RunVoronoiBreakage(allObjects, origin, blastRadius, force, density, shatterCount, lloydRelaxation);
+    }
+
+    private static void RunVoronoiBreakage(Collider2D[] allObjects, Vector2 origin, float blastRadius, float force,
+        float density, float shatterCount, int lloydRelaxation)
+    {
+        //this runs a delauney triangulation based voronoi algorithm based on the input parameters
         int[] isBreakable = new int[allObjects.Length];
         breakableObject[] allScripts = new breakableObject[allObjects.Length];
         List<Vector2f> points = CreateVoronoiPoints(shatterCount, origin.x, origin.y, force, density);
+        //This will make sure that we do not draw lines outside the square centered on the origin with side length of blastRadius * 2
         Rectf bounds = new Rectf(origin.x - blastRadius,origin.y-blastRadius,2 * blastRadius, 2 * blastRadius); //TODO: not actually a circular blast radius :skull:
+        //voronoi is generated with points and bounds. Lloyd Relaxation may be applied by the user to make the points more spread out and create more even sized polygons.
         Voronoi voronoi = new Voronoi(points,bounds, lloydRelaxation);
-        Dictionary<Vector2f, Site> sites = voronoi.SitesIndexedByLocation;
         List<Edge> edges = voronoi.Edges;
         List<Vector2> allLeftEdgeEnds = new List<Vector2>();
         List<Vector2> allRightEdgeEnds = new List<Vector2>();
-        voronoiTime = Time.realtimeSinceStartup - voronoiTime;
-        float processingTime = Time.realtimeSinceStartup;
         for (int i = 0; i < edges.Count; i++)
         {
             if (edges[i].ClippedEnds == null)
             {
                 continue;
             }
-            
             allLeftEdgeEnds.Add(new Vector2(edges[i].ClippedEnds[LR.LEFT].x, edges[i].ClippedEnds[LR.LEFT].y));
             allRightEdgeEnds.Add(new Vector2(edges[i].ClippedEnds[LR.RIGHT].x, edges[i].ClippedEnds[LR.RIGHT].y));
         }
@@ -58,6 +60,7 @@ public class ObjectFracturer : MonoBehaviour
         {
             return;
         }
+        
         int totalBreakable = 0;
         for (int i = 0; i < allObjects.Length; i++)
         {
@@ -73,40 +76,34 @@ public class ObjectFracturer : MonoBehaviour
                 }
             }
         }
+        if (totalBreakable == 0)
+        {
+            return;
+        }
+        
+        //this sector gives us all the data we require to run this, and only gets data from the objects which are destructible.
         breakableObject[] scripts = new breakableObject[totalBreakable];
         int currentIndex = 0;
-        int[] textureCounts = new int[totalBreakable];
-        int[] textureStartIndices = new int[totalBreakable];
         Vector3[] objectTransforms = new Vector3[totalBreakable];
         Vector2[] objectScales = new Vector2[totalBreakable];
-        float[] ppus = new float[totalBreakable];
-        SpriteRenderer[] sRs = new SpriteRenderer[totalBreakable];
+        Vector2[] ppusAndResFactors = new Vector2[totalBreakable];
         Vector2Int[] spriteBounds = new Vector2Int[totalBreakable];
-        int currentStartIndex = 0;
         int longestWidth = 0;
         int longestHeight = 0;
         for (int i = 0; i < allScripts.Length; i++)
         {
             if (isBreakable[i] == 1)
             {
-                //bool accDrew;
-                //allScripts[i].DoVoronoiBreakage(edges, origin, force, out accDrew);
                 Transform t = allObjects[i].gameObject.transform;
                 objectTransforms[currentIndex] = new Vector3(t.position.x, t.position.y, t.rotation.eulerAngles.z * Mathf.Deg2Rad);
                 objectScales[currentIndex] = new Vector2(t.localScale.x, t.localScale.y);
-                SpriteRenderer sR = allScripts[i].sR;
-                sRs[currentIndex] = sR;
                 scripts[currentIndex] = allScripts[i];
-                ppus[currentIndex] = allScripts[i].ppu;
-                textureCounts[currentIndex] = allScripts[i].texWidth * allScripts[i].texHeight;
-                textureStartIndices[currentIndex] = currentStartIndex;
-                currentStartIndex += allScripts[i].texWidth * allScripts[i].texHeight;
+                ppusAndResFactors[currentIndex] = new Vector2(allScripts[i].ppu, allScripts[i].resolutionFactorDecimal);
                 spriteBounds[currentIndex] = new Vector2Int(allScripts[i].texWidth, allScripts[i].texHeight);
                 if (allScripts[i].texWidth > longestWidth)
                 {
                     longestWidth = allScripts[i].texWidth;
                 }
-
                 if (allScripts[i].texHeight > longestHeight)
                 {
                     longestHeight = allScripts[i].texHeight;
@@ -114,109 +111,59 @@ public class ObjectFracturer : MonoBehaviour
                 currentIndex++;
             }
         }
-        if (totalBreakable == 0)
-        {
-            return;
-        }
-        processingTime = Time.realtimeSinceStartup - processingTime;
 
-        float gettingDataPart2 = Time.realtimeSinceStartup;
-        //currentStartIndex becomes the total count after the previous loop
-        Color32[] allColors = new Color32[longestWidth * longestHeight * totalBreakable];
-        /*Parallel.For((int)0, totalBreakable, i => {        
-            Graphics.CopyTexture(scripts[i].spriteTx, 0, 0, 0, 0, scripts[i].texWidth, scripts[i].texHeight, allTex, 0, 0, 0, longestHeight * i);
-            //System.Buffer.BlockCopy(scripts[i].txPixels, 0, allColors, longestHeight * longestWidth * i * size, scripts[i].txPixels.Length * size);
-            //Array.Copy(scripts[i].txPixels, 0, allColors, longestHeight * longestWidth * i, scripts[i].txPixels.Length);
-        });*/
-        RenderTexture renderTex = new RenderTexture(longestWidth, longestHeight, 0, RenderTextureFormat.ARGB32);
-        renderTex.enableRandomWrite = true;
-        renderTex.filterMode = FilterMode.Point;
-        renderTex.volumeDepth = totalBreakable;
-        renderTex.dimension = UnityEngine.Rendering.TextureDimension.Tex2DArray;
-        renderTex.Create();
-        RenderTexture hasBeenFilledTex = new RenderTexture(scripts.Length, 1, 0, RenderTextureFormat.R16);
+        //render texture initiation - this one saves the textures and then we apply the changes on the gpu - each texture has whitespace, if it's smaller than the largest texture we are applying this to. This may create some overhead, but it is necessary to store every texture efficiently and pass it to the gpu.
+        RenderTexture allObjectsRenderTexture = new RenderTexture(longestWidth, longestHeight, 0, RenderTextureFormat.ARGB32);
+        allObjectsRenderTexture.enableRandomWrite = true;
+        allObjectsRenderTexture.filterMode = FilterMode.Point;
+        allObjectsRenderTexture.volumeDepth = totalBreakable;
+        allObjectsRenderTexture.dimension = UnityEngine.Rendering.TextureDimension.Tex2DArray;
+        allObjectsRenderTexture.Create();
+        RenderTexture hasBeenFilledTex = new RenderTexture(scripts.Length, 1, 0, RenderTextureFormat.R16); //we use a render texture to save 16 bit integer data to avoid calling ComputeBuffer.GetData(), as the get data call can take upwards of 5 ms.
         hasBeenFilledTex.enableRandomWrite = true;
         hasBeenFilledTex.filterMode = FilterMode.Point;
         hasBeenFilledTex.dimension = TextureDimension.Tex2D;
         hasBeenFilledTex.Create();
         for (int i = 0; i < totalBreakable; i++)
         {
-            //Graphics.CopyTexture(scripts[i].spriteTx, 0, 0, 0, 0, scripts[i].texWidth, scripts[i].texHeight, allTex, 0, 0, 0, (longestHeight * totalBreakable - (longestHeight * (i + 1))) + (longestHeight - scripts[i].texHeight));
-            Graphics.CopyTexture(scripts[i].spriteTx, 0, 0, 0, 0, scripts[i].texWidth, scripts[i].texHeight, renderTex, i, 0, 0, 0);
-            //Array.Copy(scripts[i].txPixels, 0, allColors, longestHeight * longestWidth * i, scripts[i].txPixels.Length);
-            //Graphics.CopyTexture(scripts[i].spriteTx, 0, 0, 0, 0, longestWidth, Mathf.CeilToInt(scripts[i].txPixels.Length/(float)longestWidth), allTex, 0, 0, 0, longestHeight * i);
-            //allTex.SetPixels(0, longestHeight * i, longestWidth, scripts[i].txPixels.Length/longestWidth, scripts[i].txPixels);
+            //we use the Graphics.CopyTexture() method as it runs on the gpu, and we are able to write to the gpu only render texture, initializing the array with speed, instead of having to run this in the compute shader, and pass in a huge texture to initialize the array.
+            Graphics.CopyTexture(scripts[i].spriteTx, 0, 0, 0, 0, scripts[i].texWidth, scripts[i].texHeight, allObjectsRenderTexture, i, 0, 0, 0);
         }
-        gettingDataPart2 = Time.realtimeSinceStartup - gettingDataPart2;
-        float computeShaderTime = Time.realtimeSinceStartup;
         
+        //compute buffer initiation
         ComputeBuffer leftEndsBuffer = new ComputeBuffer(allLeftEdgeEnds.Count, 4 * 2);
         ComputeBuffer rightEndsBuffer = new ComputeBuffer(allRightEdgeEnds.Count, 4 * 2);
         ComputeBuffer transformBuffer = new ComputeBuffer(objectTransforms.Length, 4 * 3);
-        ComputeBuffer ppuBuffer = new ComputeBuffer(ppus.Length, 4 * 1);
+        ComputeBuffer ppuAndResFactorBuffer = new ComputeBuffer(ppusAndResFactors.Length, 4 * 2);
         ComputeBuffer spriteBoundsBuffer = new ComputeBuffer(spriteBounds.Length, 4 * 2);
         ComputeBuffer scaleBuffer = new ComputeBuffer(objectScales.Length, 4 * 2);
         leftEndsBuffer.SetData(allLeftEdgeEnds.ToArray());
         rightEndsBuffer.SetData(allRightEdgeEnds.ToArray());
         transformBuffer.SetData(objectTransforms);
         spriteBoundsBuffer.SetData(spriteBounds);
-        ppuBuffer.SetData(ppus);
+        ppuAndResFactorBuffer.SetData(ppusAndResFactors);
         scaleBuffer.SetData(objectScales);
+        
+        //compute shader setup
         voronoiFractureShader.SetInt("totalObjects", totalBreakable);
         voronoiFractureShader.SetInt("totalEdges", allLeftEdgeEnds.Count);
         voronoiFractureShader.SetInt("longestHeight", longestHeight);
         voronoiFractureShader.SetInt("longestWidth", longestWidth);
-        voronoiFractureShader.SetFloat("resolutionFactor", 0.0625f);
+        
         voronoiFractureShader.SetBuffer(kiVoronoiFractureKernel, "leftEdgeEnds", leftEndsBuffer);
         voronoiFractureShader.SetBuffer(kiVoronoiFractureKernel, "rightEdgeEnds", rightEndsBuffer);
         voronoiFractureShader.SetBuffer(kiVoronoiFractureKernel, "transforms", transformBuffer);
         voronoiFractureShader.SetBuffer(kiVoronoiFractureKernel, "scales", scaleBuffer);
-        voronoiFractureShader.SetBuffer(kiVoronoiFractureKernel, "ppus", ppuBuffer);
+        voronoiFractureShader.SetBuffer(kiVoronoiFractureKernel, "ppusAndResolutionFactors", ppuAndResFactorBuffer);
         voronoiFractureShader.SetBuffer(kiVoronoiFractureKernel, "spriteBounds", spriteBoundsBuffer);
-        voronoiFractureShader.SetTexture(kiVoronoiFractureKernel, "outputTex", renderTex);
+        
+        voronoiFractureShader.SetTexture(kiVoronoiFractureKernel, "outputTex", allObjectsRenderTexture);
         voronoiFractureShader.SetTexture(kiVoronoiFractureKernel, "hasBeenDrawnTex", hasBeenFilledTex);
-        voronoiFractureShader.SetTexture(kiApplyTexture, "outputTex", renderTex);
-        computeShaderTime = Time.realtimeSinceStartup - computeShaderTime;
-        float computePart1 = Time.realtimeSinceStartup;
-        //voronoiFractureShader.Dispatch(kiApplyTexture, Mathf.CeilToInt(longestWidth / 32f), Mathf.CeilToInt((longestHeight * totalBreakable) / 32f), 1);
-        computePart1 = Time.realtimeSinceStartup - computePart1;
-        float computePart2 = Time.realtimeSinceStartup;
+        
         voronoiFractureShader.Dispatch(kiVoronoiFractureKernel, Mathf.CeilToInt(totalBreakable / 8f), Mathf.CeilToInt(allLeftEdgeEnds.Count / 8f), 1);
-        computePart2 = Time.realtimeSinceStartup - computePart2;
-        float getDataTime = Time.realtimeSinceStartup;
-        //allColors = new Color[allColors.Length];
-        //colorBuffer.GetData(allColors);
-        getDataTime = Time.realtimeSinceStartup - getDataTime;
-        int startInd = 0;
-        float processDataTime = Time.realtimeSinceStartup;
-        /*new Thread(() => 
-        {
-            Thread.CurrentThread.IsBackground = true;
-            startInd = Thread.CurrentThread.ManagedThreadId;
-        }).Start();*/
-       /* for (int i = 0; i < totalBreakable; i++)
-        {
-            new Thread(() =>
-            {
-                Thread.CurrentThread.IsBackground = true;
-                int ind = Thread.CurrentThread.ManagedThreadId - startInd - 1;
-                print(ind);
-                //Color[] colorTex = ;
-                scripts[ind].txPixels = allColors.SubArray(textureStartIndices[ind], textureCounts[ind]);
-                scripts[ind].dirty = true;
-            }).Start();
-        }*/
-       /*Parallel.For((int)0, totalBreakable, i => {
-           DateTime startTime = DateTime.Now;
-           int ind = i;
-           //Color[] colorTex = ;
-           scripts[ind].txPixels = allColors.SubArray(textureStartIndices[ind], textureCounts[ind]);
-           scripts[ind].dirty = true;
-           DateTime endTime = DateTime.Now;
-           TimeSpan timePassed = endTime.Subtract(startTime);
-           print(timePassed);
-       });*/
-       AsyncGPUReadback.Request(hasBeenFilledTex, 0, 0, scripts.Length, 0, 1, 0, hasBeenFilledTex.volumeDepth,
+        
+        //data readback, done async
+        AsyncGPUReadback.Request(hasBeenFilledTex, 0, 0, scripts.Length, 0, 1, 0, hasBeenFilledTex.volumeDepth,
            new Action<AsyncGPUReadbackRequest>
            (
                (AsyncGPUReadbackRequest hasBeenFilledRequest) =>
@@ -224,9 +171,7 @@ public class ObjectFracturer : MonoBehaviour
                    if (!hasBeenFilledRequest.hasError)
                    {
                        Int16[] data = hasBeenFilledRequest.GetData<Int16>().ToArray();
-                       //debugTexArray =
-                        //   new Texture2DArray(longestWidth, longestHeight, renderTex.volumeDepth, TextureFormat.ARGB32, false);
-                       AsyncGPUReadback.Request(renderTex, 0, 0, longestWidth, 0, longestHeight, 0, renderTex.volumeDepth,
+                       AsyncGPUReadback.Request(allObjectsRenderTexture, 0, 0, longestWidth, 0, longestHeight, 0, allObjectsRenderTexture.volumeDepth,
                            new Action<AsyncGPUReadbackRequest>
                            (
                                (AsyncGPUReadbackRequest request) =>
@@ -241,15 +186,13 @@ public class ObjectFracturer : MonoBehaviour
                                            if (data[i] == 1)
                                            {
                                                float startTime = Time.realtimeSinceStartup;
-                                               //remove in a sec
-                                               //Graphics.CopyTexture(renderTex, i, 0, 0, 0, longestWidth, longestHeight, debugTexArray, i, 0, 0, 0);
-                                               scripts[i].txPixels = request.GetData<Color32>(i).ToArray();
-                                               scripts[i].arrayWidth = longestWidth;
+                                               scripts[i].pixelData = request.GetData<Color32>(i).ToArray();
+                                               scripts[i].pixelDataTextureWidth = longestWidth;
                                                totalTime += (Time.realtimeSinceStartup - startTime);
                                                scripts[i].dirty = true;
                                            }
                                        }
-                                       renderTex.Release();
+                                       allObjectsRenderTexture.Release();
                                    }
                                }
                            ));
@@ -257,23 +200,19 @@ public class ObjectFracturer : MonoBehaviour
                    }
                }
            ));
-
-       processDataTime = Time.realtimeSinceStartup - processDataTime;
-        float disposal = Time.realtimeSinceStartup;
+        
         leftEndsBuffer.Release();
         rightEndsBuffer.Release();
         transformBuffer.Release();
-        ppuBuffer.Release();
+        ppuAndResFactorBuffer.Release();
         spriteBoundsBuffer.Release();
         scaleBuffer.Release();
-            disposal = Time.realtimeSinceStartup - disposal;
-        //print("Overlap Circle: " + overlapCircleTime + ", Voronoi Time: " + voronoiTime + ", Getting Data Time: " + processingTime + " , Getting Data Part 2 Time: " + gettingDataPart2 + ", Compute Shader Setup Time: " + computeShaderTime + ", " +
-             // " compute shader apply tex time: " + computePart1 + " , computeShader do voronoiTime: " + computePart2 + ", get data time: " + getDataTime + ", process data time: " + processDataTime + ", disposal time: " + disposal + " , totalBreakable: " + totalBreakable);
     }
 
+    //creates a set of points that are weighted around a center at a certain scale and weight to create variation in the voronoi points.
     private static List<Vector2f> CreateVoronoiPoints(float polygonNumber, float aroundX, float aroundY, float scale, float density) {
         // Use Vector2f, instead of Vector2
-        // Vector2f is pretty much the same than Vector2, but like you could run Voronoi in another thread
+        // Vector2f is pretty much the same than Vector2, but you can run Voronoi in another thread, though this isn't used in this implementation
         List<Vector2f> points = new List<Vector2f>();
         
         int i = 0;
@@ -287,6 +226,7 @@ public class ObjectFracturer : MonoBehaviour
         return points;
     }
     
+    //creates a random point with a weight around the origin. Higher number density = more points generated nearer to the center point in the long run
     private static Vector2f randomPointWeighted(float aroundX, float aroundY, float scale, float density)
     {
         float angle = Random.Range(0f, 1f) * 2f * Mathf.PI;
@@ -300,15 +240,5 @@ public class ObjectFracturer : MonoBehaviour
         float distance = scale * (Mathf.Pow(x, -1.0f / density) - 1);
         return new Vector2f(aroundX + distance * Mathf.Sin(angle),
             aroundY + distance * Mathf.Cos(angle));
-    }
-}
-
-public static class Extensions
-{
-    public static T[] SubArray<T>(this T[] array, int offset, int length)
-    {
-        return new List<T>(array)
-            .GetRange(offset, length)
-            .ToArray();
     }
 }

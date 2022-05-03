@@ -11,74 +11,74 @@ using Object = System.Object;
 
 public class PolygonDetector
 {
+    /* PARAMETERS */
+    public Color32[] colors; //original passed in color array, used to generate list of solids and also the final texures
+    public int alphaTolerance; //at what alpha a pixel is not solid.
+    public int width;//width and height adjusted later by resolution factor
+    public int height;
+    public int arrayWidth;//width of color array, as it may be longer than the tex width, as it may be collectively processed in the object fracturer
+    public float resolutionFactor;//factor of how much smaller the processed texture is vs. the original texture, for performance on larger images.
+    
+    /* GENERAL VARIABLES */
+    private byte[] solids;//array of bytes that tells us whether objects are transparent (alpha above the alpha tolerance)
+    private int solidsLength;//length of solids array
+    private int texWidth;//width of texture, unadjusted
+    private int texHeight;//height of texture, unadjusted
+    private List<Vertices> allPolygons; //polygon list to be used within the detector, easier to work with.
+    private int[] idArray; //which pixels are which polygon, in a texture like array
+    private Color colorToShade; //the color to shade to the debug texture, for differentiating polygons
+    private int currentID = -1; //current polygon id
     private const int closePixelsLength = 4;
     private static int[,] closePixels = new int[closePixelsLength, 2] { { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 } };
-    private const float hullTolerance = 0.9f;
-
-    public byte[] solids;
-    public Color32[] colors;
-    public int alphaTolerance;
-    private int solidsLength;
-    public int width;
-    public int height;
-    private int texWidth;
-    private int texHeight;
-    public int arrayWidth;
-    public bool finished;
-
-    public Color[] pixelsDetected;
-    public int[] idArray;
-    public Color[] idArrayTex;
-    private Color colorToShade = Color.green;
-    Color blankColor = new Color(0f,0f,0f,0f);
-    public int shapeCount = 0;
-    public List<int> polygonCounts = new List<int>();
-    public List<int> polygonStartIndices = new List<int>();
-    public double tempTime = 0.0;
-    private int currentID = -1;
-    private Color32 currentColor;
-    public float resolutionFactor;
-    public List<Vector2> result;
-    public int[] holeArray;
-    public Color32[][] textureArray;
-    public Color32[] allColsDebug;
-    public int[] pixelCounts;
-    public int totalPixels;
-    private List<Vertices> allPolygons;
+    private int leftMostPixel;
+    private int rightMostPixel;
+    private int topMostPixel;
+    private int bottomMostPixel;
     
-    public void DetectPolygons(Object stateInfo/*UnityEngine.Color[] colors, int width, int alphaTolerance, float resolutionFactor*/)
+    /* OUTPUT VARIABLES */
+    public bool finished; //tells the object script when the thread is finished
+    public Color[] debugPixels; //a debug texture of sorts
+    public Color32[] allColsDebug; //a secondary debug texture
+    public List<Vector2> result; //every polygon vert in a traversable array
+    public List<int> polygonCounts = new List<int>(); //guides for how to traverse the result array (when each polygon starts and how long they are in the array).
+    public List<int> polygonStartIndices = new List<int>();
+    public int[] holeArray; //an int array which tells which polygons are holes of which other polygons
+    public Color32[][] textureArray; //output textures for each polygon
+    public int[] pixelCounts; //the number of pixels in each polygon (for mass calculations)
+    public int totalPixels; //the total number of pixels in the whole object
+
+    //This function is not parameterized, as we can run it in a thread pool and pass parameters into class variables.
+    public void DetectPolygons(Object stateInfo)
     {
         colorToShade = Color.black;
         polygonCounts.Clear();
         polygonStartIndices.Clear();
-        this.resolutionFactor = resolutionFactor;
         texWidth = width;
         texHeight = height;
         this.width = (int)(width * resolutionFactor);
         this.height = (int)(height * resolutionFactor);
+        leftMostPixel = width;
+        rightMostPixel = 0;
+        topMostPixel = height;
+        bottomMostPixel = 0;
         int len = (int) ((texWidth * resolutionFactor) * (texHeight * resolutionFactor));
         int n, s;
-        shapeCount = 0;
 
         solids = new byte[len];
-        pixelsDetected = new Color[len];
+        debugPixels = new Color[len];
         idArray = new int[len];
-        idArrayTex = new Color[len];
         solidsLength = solids.Length;
-        // calculate solids once, this makes tolerance lookups much faster
+        // calculate solids once, this makes tolerance lookups much faster - creates bytes in which 0 = not solid.
         for (int x = 0; x < texWidth; x+=(int)(1/resolutionFactor))
         {
             for (int y = 0; y < texHeight; y+=(int)(1/resolutionFactor))
             {
-                // Diff will be negative for visitable value, resulting in a sign multiply and value of 0.
-                // Sign multiply will be -1 for positive visitable values, resulting in non-zero value.
                 bool solid = false;
                 int i = (int)((y * resolutionFactor) * width + (x * resolutionFactor));
                 if (i >= len)
                 {
                     continue;
                 }
-                //Debug.Log((x) + " " + (y) + " " + i);
                 int yIterationSteps = (int)(1 / resolutionFactor);
                 int xIterationSteps = (int)(1 / resolutionFactor);
                 if (y + yIterationSteps >= texHeight)
@@ -94,16 +94,34 @@ public class PolygonDetector
                 {
                     for (int y1 = 0; y1 < yIterationSteps; y1++)
                     {
+                        // Diff will be negative for visitable value, resulting in a sign multiply and value of 0.
+                        // Sign multiply will be -1 for positive visitable values, resulting in non-zero value.
                         n = alphaTolerance - (int)(colors[(y + y1) * arrayWidth + (x + x1)].a * 255.0f);
                         s = ((int)((n & 0x80000000) >> 31)) - 1; // sign multiplier is -1 for positive numbers and 0 for negative numbers
                         n = n * s * s; // multiply n by sign squared to get 0 for negative numbers (solid) and > zero for positive numbers (pass through)
                         byte b = (byte)n;
                         if (b == 0)
                         {
+                            /*if (x < leftMostPixel)
+                            {
+                                leftMostPixel = (int)(x * resolutionFactor);
+                            }
+                            if (x > rightMostPixel)
+                            {
+                                rightMostPixel = (int)(x * resolutionFactor);
+                            }
+
+                            if (y > topMostPixel)
+                            {
+                                topMostPixel = (int)(y * resolutionFactor);
+                            }
+                            if (y < bottomMostPixel)
+                            {
+                                bottomMostPixel = (int)(y * resolutionFactor);
+                            }*/
                             solids[i] = b;
                             idArray[i] = -1;
-                            idArrayTex[i] = new Color(1/255f, 0, 0, 0);
-                            pixelsDetected[i] = Color.blue;
+                            debugPixels[i] = Color.blue;
                             solid = true;
                         }
                     }
@@ -115,54 +133,12 @@ public class PolygonDetector
                     n = n * s * s; // multiply n by sign squared to get 0 for negative numbers (solid) and > zero for positive numbers (pass through)
                     solids[i] = (byte)n;
                     idArray[i] = -2;
-                    pixelsDetected[i] = Color.black;
-                    idArrayTex[i] = new Color(0, 0, 0, 0);
+                    debugPixels[i] = Color.black;
                 }
-                /*n = alphaTolerance - (int)(colors[y * width + x].a * 255.0f);
-                s = ((int)((n & 0x80000000) >> 31)) - 1; // sign multiplier is -1 for positive numbers and 0 for negative numbers
-                n = n * s * s; // multiply n by sign squared to get 0 for negative numbers (solid) and > zero for positive numbers (pass through)
-                int i = (int)((y * resolutionFactor) * (width * resolutionFactor) + (x * resolutionFactor));
-                if (i >= solidsLength)
-                {
-                    i = solidsLength - 1;
-                }
-                solids[i] = (byte)n; // assign value back
-                if (IsSolid(i))
-                {
-                    idArray[i] = -1;
-                }
-                else
-                {
-                    idArray[i] = -2;
-                }*/
             }
         }
-        /* for (int i = 0; i < solids.Length; i++)
-         {
-             // Diff will be negative for visitable value, resulting in a sign multiply and value of 0.
-             // Sign multiply will be -1 for positive visitable values, resulting in non-zero value.
-             n = alphaTolerance - (int)(colors[i].a * 255.0f);
-             s = ((int)((n & 0x80000000) >> 31)) - 1; // sign multiplier is -1 for positive numbers and 0 for negative numbers
-             n = n * s * s; // multiply n by sign squared to get 0 for negative numbers (solid) and > zero for positive numbers (pass through)
-             solids[i] = (byte)n; // assign value back
-             if (IsSolid(i))
-             {
-                 idArray[i] = -1;
-                 pixelsDetected[i] = Color.black;
-             }
-             else
-             {
-                 pixelsDetected[i] = Color.blue;
-                 idArray[i] = -2;
-             }
-                 
-            
-         }*/
-        //double startTime = Time.realtimeSinceStartup;
         List<Vertices> detectedVerticesList = DoDetectPolygons();
-        //tempTime = Time.realtimeSinceStartup - startTime;
-        //TODO: OPTIMIZE by doing during the operation - takes 3ms at times
-        
+        //TODO: OPTIMIZE by doing during the creation of polygons - takes 3ms at times
         result = new List<Vector2>();
 
         for (int i = 0; i < detectedVerticesList.Count; i++)
@@ -194,7 +170,6 @@ public class PolygonDetector
         List<Vertices> detectedPolygons = new List<Vertices>();
         Vector2? holeEntrance = null;
         Vector2? polygonEntrance = null;
-        List<Vector2> blackList = new List<Vector2>();
         bool searchOn;
         bool firstPass = true;
         do
@@ -203,11 +178,8 @@ public class PolygonDetector
             if (firstPass)
             {
                 currentID = 0;
-                currentColor = new Color(2f/255f, 0, 0, 0);
-                //colorToShade = new Color(System.Random(0f, 1f), Random.Range(0f, 1f), Random.Range(0f, 1f));
                 // First pass / single polygon
                 polygon = new Vertices(CreateSimplePolygon(Vector2.zero, Vector2.zero, true));
-                shapeCount++;
                 if (polygon.Count > 2)
                 {
                     polygonEntrance = GetTopMostVertex(polygon);
@@ -223,7 +195,6 @@ public class PolygonDetector
             }
             else if (polygonEntrance.HasValue)
             {
-                shapeCount++;
                 // Multi pass / multiple polygons
                 polygon = new Vertices(CreateSimplePolygon(polygonEntrance.Value, new Vector2(polygonEntrance.Value.x - 1f, polygonEntrance.Value.y), true));
             }
@@ -232,69 +203,8 @@ public class PolygonDetector
                 break;
             }
             searchOn = false;
-            
-            /*if (polygon.Count > 2)
-            {
-                do
-                {
-                    holeEntrance = SearchHoleEntrance(polygon, holeEntrance);
-
-                    if (holeEntrance.HasValue)
-                    {
-                        if (!blackList.Contains(holeEntrance.Value))
-                        {
-                            blackList.Add(holeEntrance.Value);
-                            shapeCount++;
-                            Vertices holePolygon = CreateSimplePolygon(holeEntrance.Value, new Vector2(holeEntrance.Value.x + 1, holeEntrance.Value.y), false);
-                            if (holePolygon != null && holePolygon.Count > 2)
-                            {
-                                // Add first hole polygon vertex to close the hole polygon.
-                                holePolygon.Add(holePolygon[0]);
-                                SearchHoleEntrance(holePolygon, null);
-                                int vertex1Index, vertex2Index;
-                                if (SplitPolygonEdge(polygon, holeEntrance.Value, out vertex1Index, out vertex2Index))
-                                {
-                                    polygon.InsertRange(vertex2Index, holePolygon);
-                                }
-                            }
-                        }
-                        else
-                        {
-                            break;
-                        }
-                    }
-                    else
-                    {
-                        break;
-                    }
-                }
-                while (true);
-            }*/
             detectedPolygons.Add(polygon);
             currentID++;
-            int current = currentID + 20;
-            int a = 0;
-            int r = current;
-            int g = 0;
-            int b = 0;
-            if (current > 255 && current <= 510)
-            {
-                r = 255;
-                g = current - 255;
-            }else if (current > 510 && current <= 765)
-            {
-                r = 255;
-                g = 255;
-                b = current - 510;
-            }
-            else if(current > 765)
-            {
-                r = 255;
-                g = 255;
-                b = 255;
-                a = current - 765;
-            }
-            currentColor = new Color(r/255f, g/255f, b/255f, a/255f);
             colorToShade = new Color(colorToShade.r + 0.02f, colorToShade.g + 0.02f, colorToShade.b + 0.02f);
             if (polygonEntrance.HasValue && SearchNextHullEntrance(detectedPolygons, polygonEntrance.Value, out polygonEntrance))
             {
@@ -317,19 +227,21 @@ public class PolygonDetector
         holeArray = new int[allPolygons.Count];
         int[] nonRepeatingEntranceIds;
         int[] nonRepeatingEntranceIdsCounts;
+        //basically runs a line of pixels out from each polygon's first vertex and counts which polygons it crosses and how many times it crosses each polygon.
         for (int i = 0; i < allPolygons.Count; i++)
         {
+            //you only have to check one vertex because we are guaranteed to have no overlap in the polygons
             int startX = Mathf.FloorToInt(allPolygons[i][0].x);
             int y = Mathf.RoundToInt(allPolygons[i][0].y);
             int polyIndex = i;
-            pixelsDetected[y * width + startX] = Color.green;
+            debugPixels[y * width + startX] = Color.green;
             int insideTotal = 0;
             int totalLines = 0;
             nonRepeatingEntranceIds = new int[allPolygons.Count];
             nonRepeatingEntranceIdsCounts = new int[allPolygons.Count];
             for (int x = startX; x < width; x++)
             {
-                //Debug.Log(x + " " + y + " "  + (y * width + x) + " " + pixelsDetected.Length);
+                //check if this is an external pixel
                 if (idArray[y * width + x] != -1 && idArray[y * width + x] != -2 &&
                     (y * width + x - 1 < 0 || idArray[y * width + x - 1] == -2 || idArray[y * width + x + 1] == -2 || y * width + x + 1 >= idArray.Length) &&
                     idArray[y * width + x] != polyIndex)
@@ -352,16 +264,17 @@ public class PolygonDetector
                         nonRepeatingEntranceIds[polyInd] = currentInd;
                         insideTotal += 1;
                     }
+                    //if this pixel has air on either side of it, we add two to the number of times we've seen a polygon, as it is practically an entrance and an exit. 
                     if(idArray[y * width + x - 1] == -2 && idArray[y * width + x + 1] == -2)
                     {
                         nonRepeatingEntranceIdsCounts[polyInd] += 2;
                         if (nonRepeatingEntranceIdsCounts[polyInd] % 2 == 1)
                         {
-                            pixelsDetected[y * width + x] = Color.magenta;
+                            debugPixels[y * width + x] = Color.magenta;
                         }
                         else
                         {
-                            pixelsDetected[y * width + x] = Color.red;
+                            debugPixels[y * width + x] = Color.red;
                         }
                         totalLines += 2;
                     }else
@@ -369,32 +282,34 @@ public class PolygonDetector
                         nonRepeatingEntranceIdsCounts[polyInd] += 1;
                         if (nonRepeatingEntranceIdsCounts[polyInd] % 2 == 1)
                         {
-                            pixelsDetected[y * width + x] = Color.magenta;
+                            debugPixels[y * width + x] = Color.magenta;
                         }
                         else
                         {
-                            pixelsDetected[y * width + x] = Color.red;
+                            debugPixels[y * width + x] = Color.red;
                         }
                         totalLines += 1;
                     }
                 }
             }
             bool isHole = false;
+            //it can only be a hole if there is an odd number of entrances/exits to the right of it.
             if(totalLines % 2 == 1)
             {
                 for(int k = 0;k < insideTotal;k++)
                 {
+                    //we find the first object that has an odd number of entrances to it, and we know that this object is a hole of that one.
                     if(nonRepeatingEntranceIdsCounts[k] % 2 == 1)
                     {
                         isHole = true;
-                        pixelsDetected[y * width + startX] = Color.blue;
+                        debugPixels[y * width + startX] = Color.blue;
                         holeArray[polyIndex] = nonRepeatingEntranceIds[k];
                         break;
                     }
 
                     if (k == insideTotal - 1)
                     {
-                        pixelsDetected[y * width + startX] = Color.cyan;
+                        debugPixels[y * width + startX] = Color.cyan;
                     }
                 }
             }
@@ -409,7 +324,7 @@ public class PolygonDetector
     {
         pixelCounts = new int[allPolygons.Count];
         allColsDebug = new Color32[texWidth * texHeight];
-        for (int y = 0; y < height; y++)
+        for (int y = 0; y <height; y++)
         {
             int mostRecentID = -1;
             for (int x = 0; x < width; x++)
@@ -419,7 +334,7 @@ public class PolygonDetector
                     mostRecentID = idArray[y * width + x];
                 }
 
-                Color pixelDetect = pixelsDetected[(int) ((y) * (width) + (x))];
+                Color pixelDetect = debugPixels[(int) ((y) * (width) + (x))];
                 for (int x1 = 0; x1 < (1 / resolutionFactor); x1++)
                 {
                     for (int y1 = 0; y1 < (1 / resolutionFactor); y1++)
@@ -451,10 +366,8 @@ public class PolygonDetector
 
                     }
                 }
-                //pixelCounts[holeArray[mostRecentID]] += (int) (1 / resolutionFactor) * (int) (1 / resolutionFactor);
             }
         }
-
         for (int i = 0; i < pixelCounts.Length; i++)
         {
             totalPixels += pixelCounts[i];
@@ -468,7 +381,6 @@ public class PolygonDetector
 
         Vertices polygon = new Vertices(32);
         Vertices hullArea = new Vertices(32);
-        Vertices endOfHullArea = new Vertices(32);
 
         Vector2 current = Vector2.zero;
 
@@ -552,7 +464,6 @@ public class PolygonDetector
             {
                 if (IsSolid(x, y))
                 {
-                    //pixelsDetected[y * width + x] = Color.magenta;
                     entrance = new Vector2(x, y);
                     return true;
                 }
@@ -588,26 +499,14 @@ public class PolygonDetector
                     entrance = new Vector2(x, (i - x) / (float)width);
 
                     inPolygon = false;
-                    if (idArray[i] >= 0) /*!pixelsDetected[i].Equals(blankColor)*/
+                    if (idArray[i] >= 0)
                     {
                         inPolygon = true;
                     }
                     else
                     {
-                        //pixelsDetected[i] = Color.magenta;
                         idArray[i] = currentID;
-                        idArrayTex[i] = currentColor;
                     }
-                    /*inPolygon = false;
-                    for (int polygonIdx = 0; polygonIdx < detectedPolygons.Count; polygonIdx++)
-                    {
-                        if (InPolygon(detectedPolygons[polygonIdx], entrance.Value))
-                        {
-                            inPolygon = true;
-                            break;
-                        }
-                    }*/
-
                     if (inPolygon)
                         foundTransparent = false;
                     else
@@ -643,11 +542,10 @@ public class PolygonDetector
                 if (IsSolid(x, y))
                 {
                     Vector2 v = new Vector2(x, y);
-                    if (idArray[x + y * width] < 0) /*pixelsDetected[(int) v.x + (int) v.y * width].Equals(blankColor)*/
+                    if (idArray[x + y * width] < 0)
                     {
-                        pixelsDetected[(x + y * width)] = colorToShade;
+                        debugPixels[(x + y * width)] = colorToShade;
                         idArray[x + y * width] = currentID;
-                        idArrayTex[x + y * width] = currentColor;
                     }
                     next = new Vector2(x, y);
                     return true;
@@ -700,7 +598,6 @@ public class PolygonDetector
          }
 
          return false;
-         //return (index >= 0 && index < solids.Length && solids[index] == 0);
      }
 
      private bool IsNearPixel(ref Vector2 current, ref Vector2 near)
@@ -731,10 +628,6 @@ public class PolygonDetector
 
             if (!searchingForSolidPixel ^ IsSolid(x, y))
             {
-                Vector2 v = new Vector2(x, y);
-                //TODO: next line necessary?
-                /*idArray[(int) v.x + (int) v.y * width] = currentID;
-                pixelsDetected[(int)v.x + (int)v.y * width] = colorToShade;*/
                 foundPixel = new Vector2(x, y);
                 return true;
             }
@@ -801,7 +694,4 @@ public class PolygonDetector
 
         return 0;
     }
-
-
-
 }
