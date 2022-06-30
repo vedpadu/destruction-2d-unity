@@ -148,6 +148,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   spriteTx: {fileID: 0}
+  isKinematic: 0
+  preserveThisObject: 1
   ppu: 0
   texWidth: 0
   texHeight: 0
@@ -161,3 +163,7 @@ MonoBehaviour:
   resolutionFactorDecimal: 0
   pixelCount: 0
   distanceThreshold: 0
+  holesFinalized: 0
+  countsFinalized: 0
+  colorsFinalized: 0
+  allTextures: []

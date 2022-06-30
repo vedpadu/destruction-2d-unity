@@ -18,8 +18,13 @@ public class mouseScript : MonoBehaviour
         {
             double start = Time.realtimeSinceStartup;
             var pos = Camera.main.ScreenToWorldPoint(Input.mousePosition);
-            ObjectFracturer.DoVoronoiBreak((Vector2) pos , 1f, 0.5f, 1f, Random.Range(5,10), 1);
-            print("voronoi time" + ": " + (Time.realtimeSinceStartup - start));
+            ObjectFracturer.DoVoronoiBreak((Vector2) pos , 2f, 1f, 1f, Random.Range(10,20), 1);
+            debug = ObjectFracturer.debugTexArray;
+        }else if (Input.GetMouseButtonDown(0))
+        {
+            double start = Time.realtimeSinceStartup;
+            var pos = Camera.main.ScreenToWorldPoint(Input.mousePosition);
+            ObjectFracturer.DoVoronoiBreak((Vector2) pos , 0.5f, 0.25f, 2f, Random.Range(10,20), 1);
             debug = ObjectFracturer.debugTexArray;
         }
     }

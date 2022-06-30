@@ -185,6 +185,7 @@ public class ObjectFracturer : MonoBehaviour
                                        {
                                            if (data[i] == 1)
                                            {
+                                               Graphics.CopyTexture(allObjectsRenderTexture, i, 0, 0, 0, scripts[i].texWidth, scripts[i].texHeight, scripts[i].spriteTx, 0, 0, 0, 0);
                                                float startTime = Time.realtimeSinceStartup;
                                                scripts[i].pixelData = request.GetData<Color32>(i).ToArray();
                                                scripts[i].pixelDataTextureWidth = longestWidth;

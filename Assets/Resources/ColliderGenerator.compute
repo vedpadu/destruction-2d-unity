@@ -1,0 +1,160 @@
+﻿int vertCount;
+int totalPolygons;
+RWStructuredBuffer<uint> idArray;
+RWTexture2D<float> testOutputTex;
+RWTexture2D<float2> pixelCountsOutput;
+RWStructuredBuffer<uint> pixelCounts;
+RWTexture2DArray<float4> allTextures;
+RWStructuredBuffer<float2> allVerts;
+RWStructuredBuffer<uint> polyStartIndices;
+RWStructuredBuffer<uint> resultDebug;
+RWStructuredBuffer<uint> allPolyEntrances;
+RWStructuredBuffer<uint> nonRepeatingEntranceIds;
+RWStructuredBuffer<uint> nonRepeatingEntranceIdsCounts;
+RWStructuredBuffer<uint> allPolyEntrancesXCoords;
+RWStructuredBuffer<uint> polyHoleResults;
+Texture2D<float4> origTex;
+int texWidth;
+int texHeight;
+float resolutionFactor;
+
+// Each #kernel tells which function to compile; you can have many kernels
+
+
+float dist(float2 point1, float2 point2)
+{
+    return sqrt(((point1.x - point2.x) * (point1.x - point2.x)) + ((point1.x - point2.y) * (point1.y - point2.y)));
+}
+
+float DistanceBetweenPointAndLineSegment(float2 point1, float2 start, float2 end)
+{
+    if (start.x == end.x && start.y == end.y)
+        return dist(point1, start);
+
+    float2 v = end - start;
+    float2 w = point1 - start;
+
+    float c1 = dot(w, v);
+    if (c1 <= 0) return dist(point1, start);
+
+    float c2 = dot(v, v);
+    if (c2 <= c1) return dist(point1, end);
+
+    float b = c1 / c2;
+    float2 pointOnLine = (start + (v * b));
+    return dist(point1, pointOnLine);
+}
+
+#pragma kernel GetPixelCountsAndTextures
+
+[numthreads(32,1,1)]
+void GetPixelCountsAndTextures (uint3 id: SV_DispatchThreadID)
+{
+    uint yLevel = id.x;
+    if(yLevel > texHeight * resolutionFactor)
+    {
+        return;
+    }
+    uint width = texWidth * (resolutionFactor);
+    int mostRecentID = -1;
+    for(int x = 0;x < width;x++)
+    {
+        if(idArray[yLevel * width + x] != -1 && idArray[yLevel * width + x] != -2)
+        {
+            mostRecentID = idArray[yLevel * width + x];
+        }
+        if(idArray[yLevel * width + x] != -2 && mostRecentID != -1)
+        {
+            resultDebug[yLevel * texWidth * resolutionFactor + x] = polyHoleResults[mostRecentID] + 1;
+            for(int x1 = 0;x1 < (1/resolutionFactor);x1++)
+            {
+                for(int y1 = 0;y1 < (1/resolutionFactor);y1++)
+                {
+                    allTextures[uint3(x * (1/resolutionFactor) + x1, yLevel * (1/resolutionFactor) + y1, polyHoleResults[mostRecentID])] = origTex[uint2((x * (1/resolutionFactor) + x1), (yLevel * (1/resolutionFactor) + y1))];
+                }
+            }
+            InterlockedAdd(pixelCounts[polyHoleResults[mostRecentID]], (1/resolutionFactor) * (1/resolutionFactor));
+        }
+    }
+    for(int i = 0;i <= totalPolygons;i++)
+    {
+        int toRepresent = pixelCounts[i];
+        int first = (toRepresent % 65536.0);
+        int second = (int)(toRepresent/65536.0);
+        pixelCountsOutput[uint2(i, 0)] = float2(first/65536.0, second/65536.0);
+    }
+}
+
+#pragma kernel FindHolesViaVertices
+
+[numthreads(8,1,1)]
+void FindHolesViaVertices (uint3 id: SV_DispatchThreadID)
+{
+    uint polyIndex = id.x;
+    if(polyIndex >= totalPolygons)
+    {
+        return;
+    }
+    int width = texWidth * resolutionFactor;
+    uint startX = allVerts[polyStartIndices[polyIndex]].x;
+    uint y = allVerts[polyStartIndices[polyIndex]].y;
+    uint insideTotal = 0;
+    uint totalLines = 0;
+    //resultDebug[y * texWidth * resolutionFactor + startX] = 4;
+    for(uint x = startX; x < width;x++)
+    {
+        if(idArray[y * width + x] != -1 && idArray[y * width + x] != -2 && (x + 1 == width || x - 1 == startX - 1 || idArray[y * width + x - 1] == -2 || idArray[y * width + x + 1] == -2) && idArray[y * width + x] != polyIndex)
+        {
+            uint currentInd = idArray[y * width + x];
+            bool newPoly = true;
+            uint polyInd = -1;
+            for(int i = 0;i < insideTotal;i++)
+            {
+                if(nonRepeatingEntranceIds[polyIndex * totalPolygons + i] == currentInd)
+                {
+                    newPoly = false;
+                    polyInd = i;
+                    break;
+                }
+            }
+            if(newPoly)
+            {
+                polyInd = insideTotal;
+                nonRepeatingEntranceIds[polyIndex * totalPolygons + polyInd] = currentInd;
+                insideTotal += 1;
+            }
+            if(idArray[y * width + x - 1] == -2 && idArray[y * width + x + 1] == -2)
+            {
+                resultDebug[y * width + x] = 3;
+                nonRepeatingEntranceIdsCounts[polyIndex * totalPolygons + polyInd] += 2;
+                totalLines += 2;
+            }else
+            {
+                resultDebug[y * width + x] = 2;
+                nonRepeatingEntranceIdsCounts[polyIndex * totalPolygons + polyInd] += 1;
+                totalLines += 1;
+            }
+        }
+    }
+    bool isHole = false;
+    if(totalLines % 2 == 1)
+    {
+        resultDebug[y * texWidth * resolutionFactor + startX] = 5;
+        for(int i = 0;i < insideTotal;i++)
+        {
+            if(nonRepeatingEntranceIdsCounts[polyIndex * totalPolygons + i] % 2 == 1)
+            {
+                isHole = true;
+                resultDebug[y * width + startX] = nonRepeatingEntranceIds[polyIndex * totalPolygons + i] + 1;
+                testOutputTex[uint2(polyIndex, 0)] = float((nonRepeatingEntranceIds[polyIndex * totalPolygons + i] + 1.0)/65535.0);
+                polyHoleResults[polyIndex] = nonRepeatingEntranceIds[polyIndex * totalPolygons + i];
+                break;
+            }
+        }
+    }
+    if(!isHole)
+    {
+        testOutputTex[uint2(polyIndex, 0)] = float((polyIndex + 1.0)/65535.0);
+        polyHoleResults[polyIndex] = polyIndex;
+    }
+}
