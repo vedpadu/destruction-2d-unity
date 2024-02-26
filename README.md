@@ -4,3 +4,7 @@ Highly optimized 2D Destruction engine in Unity. Utilizes multiple CPU threads t
 
 https://github.com/vedpadu/destruction-2d-unity/assets/44281866/466a7367-8ecc-488c-924f-276e1a1a918c
 
+The engine is able to deal with a number of complex shapes as well as destruction patterns, such as this one below, where a tree is stamped.
+
+https://github.com/vedpadu/destruction-2d-unity/assets/44281866/d7f50d32-0f44-4012-bbdf-268ded9de2cb
+
