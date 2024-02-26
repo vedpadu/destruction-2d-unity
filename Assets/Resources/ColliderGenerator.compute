@@ -1,10 +1,13 @@
 ﻿int vertCount;
 int totalPolygons;
-RWStructuredBuffer<uint> idArray;
+StructuredBuffer<uint> idArray;
+StructuredBuffer<uint> rootArray;
+RWTexture2D<float> rootOutputs;
 RWTexture2D<float> testOutputTex;
 RWTexture2D<float2> pixelCountsOutput;
 RWStructuredBuffer<uint> pixelCounts;
 RWTexture2DArray<float4> allTextures;
+RWTexture2DArray<float4> allTexturesPreAlias;
 RWStructuredBuffer<float2> allVerts;
 RWStructuredBuffer<uint> polyStartIndices;
 RWStructuredBuffer<uint> resultDebug;
@@ -14,6 +17,7 @@ RWStructuredBuffer<uint> nonRepeatingEntranceIdsCounts;
 RWStructuredBuffer<uint> allPolyEntrancesXCoords;
 RWStructuredBuffer<uint> polyHoleResults;
 Texture2D<float4> origTex;
+Texture2D<float4> preAliasTex;
 int texWidth;
 int texHeight;
 float resolutionFactor;
@@ -66,14 +70,71 @@ void GetPixelCountsAndTextures (uint3 id: SV_DispatchThreadID)
         if(idArray[yLevel * width + x] != -2 && mostRecentID != -1)
         {
             resultDebug[yLevel * texWidth * resolutionFactor + x] = polyHoleResults[mostRecentID] + 1;
+            if(rootArray[yLevel * width + x] > 0)
+            {
+                int rootIndex = rootArray[yLevel * width + x] - 1; 
+                rootOutputs[uint2(rootIndex, 0)] = float((polyHoleResults[mostRecentID] + 1.0)/65535.0);
+            }
             for(int x1 = 0;x1 < (1/resolutionFactor);x1++)
             {
                 for(int y1 = 0;y1 < (1/resolutionFactor);y1++)
                 {
                     allTextures[uint3(x * (1/resolutionFactor) + x1, yLevel * (1/resolutionFactor) + y1, polyHoleResults[mostRecentID])] = origTex[uint2((x * (1/resolutionFactor) + x1), (yLevel * (1/resolutionFactor) + y1))];
+                    allTexturesPreAlias[uint3(x * (1/resolutionFactor) + x1, yLevel * (1/resolutionFactor) + y1, polyHoleResults[mostRecentID])] = preAliasTex[uint2((x * (1/resolutionFactor) + x1), (yLevel * (1/resolutionFactor) + y1))];
                 }
             }
             InterlockedAdd(pixelCounts[polyHoleResults[mostRecentID]], (1/resolutionFactor) * (1/resolutionFactor));
+        }else if(idArray[yLevel * width + x] == -2)
+        {
+            int k = ((1/resolutionFactor) - 1);
+            for(int x1 = 0;x1 < (1/resolutionFactor);x1++)
+            {
+                for(int y1 = 0;y1 < (1/resolutionFactor);y1++)
+                {
+                    if(origTex[uint2((x * (1/resolutionFactor) + x1), (yLevel * (1/resolutionFactor) + y1))].a != 0.0)
+                    {
+                        bool isEdge = (x1 == 0 || y1 == 0 || x1 == k || y1 == k);
+                        if(isEdge)
+                        {
+                            if(x1 == 0)
+                            {
+                                int id0 = idArray[yLevel * width + x - 1];
+                                if(id0 != -1 && id0 != -2)
+                                {
+                                    allTextures[uint3(x * (1/resolutionFactor) + x1, yLevel * (1/resolutionFactor) + y1, polyHoleResults[id0])] = origTex[uint2((x * (1/resolutionFactor) + x1), (yLevel * (1/resolutionFactor) + y1))];
+                                }
+                            }
+                            if(y1 == 0)
+                            {
+                                int id0 = idArray[(yLevel - 1) * width + x];
+                                if(id0 != -1 && id0 != -2)
+                                {
+                                    allTextures[uint3(x * (1/resolutionFactor) + x1, yLevel * (1/resolutionFactor) + y1, polyHoleResults[id0])] = origTex[uint2((x * (1/resolutionFactor) + x1), (yLevel * (1/resolutionFactor) + y1))];
+                                }
+                            }
+                            if(x1 == k)
+                            {
+                                int id0 = idArray[yLevel * width + x + 1];
+                                if(id0 != -1 && id0 != -2)
+                                {
+                                    allTextures[uint3(x * (1/resolutionFactor) + x1, yLevel * (1/resolutionFactor) + y1, polyHoleResults[id0])] = origTex[uint2((x * (1/resolutionFactor) + x1), (yLevel * (1/resolutionFactor) + y1))];
+                                }
+                            }
+                            if(y1 == k)
+                            {
+                                int id0 = idArray[(yLevel + 1) * width + x];
+                                if(id0 != -1 && id0 != -2)
+                                {
+                                    allTextures[uint3(x * (1/resolutionFactor) + x1, yLevel * (1/resolutionFactor) + y1, polyHoleResults[id0])] = origTex[uint2((x * (1/resolutionFactor) + x1), (yLevel * (1/resolutionFactor) + y1))];
+                                }
+                            }
+                           
+                        }
+
+                    }
+                    //allTexturesPreAlias[uint3(x * (1/resolutionFactor) + x1, yLevel * (1/resolutionFactor) + y1, polyHoleResults[mostRecentID])] = preAliasTex[uint2((x * (1/resolutionFactor) + x1), (yLevel * (1/resolutionFactor) + y1))];
+                }
+            }
         }
     }
     for(int i = 0;i <= totalPolygons;i++)

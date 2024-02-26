@@ -148,6 +148,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   spriteTx: {fileID: 0}
+  preAliasedTx: {fileID: 0}
   isKinematic: 0
   preserveThisObject: 1
   ppu: 0
@@ -167,3 +168,6 @@ MonoBehaviour:
   countsFinalized: 0
   colorsFinalized: 0
   allTextures: []
+  allTexturesAntiAlias: []
+  doAntiAliasing: 1
+  antiAliased: 0

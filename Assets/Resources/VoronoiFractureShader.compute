@@ -14,41 +14,37 @@ int longestHeight;
 int longestWidth;
 int totalEdges;
 
+float originX;
+float originY;
+float blastRadius;
+float falloff;
+float probabilityFalloff;
+
+Texture2D fractureImage;
+int fractureImageHeight;
+int fractureImageWidth;
+int numberDrawn;
+RWStructuredBuffer<float2> originPixelPositions;
+float imageWidth;
+
+RWStructuredBuffer<int> indicesBuffer;
+int indicesBufferLength;
+RWTexture2D<float4> antiAliasTex;
+int antiAliasWidth;
+int antiAliasHeight;
+
 float dist(float2 point1, float2 point2)
 {
     return sqrt(((point1.x - point2.x) * (point1.x - point2.x)) + ((point1.x - point2.y) * (point1.y - point2.y)));
 }
 
-#pragma kernel VoronoiFracture
-
-[numthreads(8,8,1)]
-void VoronoiFracture (uint3 id : SV_DispatchThreadID)
+float random (float2 uv)
 {
-    int objectIndex = id.x;
-    int edgeIndex = id.y;
-    if(objectIndex >= totalObjects || edgeIndex >= totalEdges)
-    {
-        return;
-    }
-    float2 worldPos = float2(transforms[objectIndex].x, transforms[objectIndex].y);
-    float rotation = transforms[objectIndex].z;
-    float2 diffInPosLeft = leftEdgeEnds[edgeIndex] - worldPos;
-    float angleLeft = atan2(diffInPosLeft.y, diffInPosLeft.x) - rotation;
-    float magLeft = sqrt(pow(diffInPosLeft.x, 2) + pow(diffInPosLeft.y, 2));
-    diffInPosLeft = float2(magLeft * cos(angleLeft) * (1/scales[objectIndex].x), magLeft * sin(angleLeft) * (1/scales[objectIndex].y));
-    float2 pixelPosLeft = diffInPosLeft * ppusAndResolutionFactors[objectIndex].x;
-    pixelPosLeft = float2(pixelPosLeft.x + spriteBounds[objectIndex].x/2, pixelPosLeft.y + spriteBounds[objectIndex].y/2);
-    float2 diffInPosRight = rightEdgeEnds[edgeIndex] - worldPos;
-    float angleRight = atan2(diffInPosRight.y, diffInPosRight.x) - rotation;
-    float magRight = sqrt(pow(diffInPosRight.x, 2) + pow(diffInPosRight.y, 2));
-    diffInPosRight = float2(magRight * cos(angleRight) * (1/scales[objectIndex].x), magRight * sin(angleRight) * (1/scales[objectIndex].y));
-    float2 pixelPosRight = diffInPosRight * ppusAndResolutionFactors[objectIndex].x;
-    pixelPosRight = float2(pixelPosRight.x + (spriteBounds[objectIndex].x/2), pixelPosRight.y + (spriteBounds[objectIndex].y/2));
-    int x0 = (int)pixelPosLeft.x;
-    int y0 = (int)pixelPosLeft.y;
-    int x1 = (int)pixelPosRight.x;
-    int y1 = (int)pixelPosRight.y;
-   
+    return frac(sin(dot(uv,float2(12.9898,78.233)))*43758.5453123);
+}
+
+void bresenhamLine (int x0, int y0, int x1, int y1, int objectIndex)
+{
     int dx = abs(x1-x0);
     int dy = abs(y1-y0);
     int sx = x0 < x1 ? 1 : -1;
@@ -88,4 +84,406 @@ void VoronoiFracture (uint3 id : SV_DispatchThreadID)
             y0 += sy;
         }
     }
+}
+
+// fractional part of x
+float fpart(float x)
+{
+    return x - floor(x);
+}
+
+float rfpart(float x)
+{
+    return 1 - fpart(x);
+}
+
+void drawPix(float x, float y, float c, int objectIndex)
+{
+    if(x >= 0 && x < spriteBounds[objectIndex].x && y >= 0 && y < spriteBounds[objectIndex].y)
+    {
+        float4 col = outputTex[uint3(x, y, objectIndex)];
+        hasBeenDrawnTex[uint2(objectIndex, 0)] = float((1)/65535.0);
+        outputTex[uint3((x), (y), objectIndex)] = float4(col.r, col.g, col.b, 1.0 - c);
+    }
+    
+}
+
+void aliasedLine(float x0,float y0,float x1,float y1, int objectIndex)
+{
+    /*if(x0 >= 0 && x0 < spriteBounds[objectIndex].x && y0 >= 0 && y0 < spriteBounds[objectIndex].y)
+    {
+        
+        outputTex[uint3(((int)x0), ((int)y0), objectIndex)] = float4(0.0,0.0,0.0,0.0);
+    }*/
+    
+    drawPix(x0, y0, 1.0, objectIndex);
+    drawPix(x1, y1, 1.0, objectIndex);
+   bool steep = (abs(y1 - y0) > abs(x1 - x0));
+    if(steep)
+    {
+        float temp = y0;
+        y0 = x0;
+        x0 = temp;
+        float temp2 = y1;
+        y1 = x1;
+        x1 = temp2;
+    }
+    if (x0 > x1)
+    {
+        float temp = x0;
+        x0 = x1;
+        x1 = temp;
+        float temp2 = y0;
+        y0 = y1;
+        y1 = temp2;
+    }
+    
+    float dx = x1 - x0;
+    float dy = y1 - y0;
+
+    float gradient;
+    if (dx == 0.0)
+    {
+        gradient = 1.0;
+    }else
+    {
+        gradient = dy / dx;
+    }
+
+    // handle first endpoint
+    float xend = round(x0);
+    float yend = y0 + gradient * (xend - x0);
+    float xgap = rfpart(x0 + 0.5);
+    int xpxl1 = xend; // this will be used in the main loop
+    float ypxl1 = floor(yend);
+    if (steep)
+    {
+        drawPix(ypxl1,   xpxl1, rfpart(yend) * xgap, objectIndex);
+        drawPix(ypxl1+1, xpxl1,  fpart(yend) * xgap, objectIndex);
+    }
+    else
+    {
+        drawPix(xpxl1, ypxl1  , rfpart(yend) * xgap, objectIndex);
+        drawPix(xpxl1, ypxl1+1,  fpart(yend) * xgap, objectIndex);
+    }
+
+    float intery = yend + gradient; // first y-intersection for the main loop
+    
+    // handle second endpoint
+    xend = round(x1);
+    yend = y1 + gradient * (xend - x1);
+    xgap = fpart(x1 + 0.5);
+    int xpxl2 = xend; //this will be used in the main loop
+    float ypxl2 = floor(yend);
+    if (steep)
+    {
+        drawPix(ypxl2  , xpxl2, rfpart(yend) * xgap, objectIndex);
+        drawPix(ypxl2+1, xpxl2,  fpart(yend) * xgap, objectIndex);
+    }else
+    {
+        drawPix(xpxl2, ypxl2,  rfpart(yend) * xgap, objectIndex);
+        drawPix(xpxl2, ypxl2+1, fpart(yend) * xgap, objectIndex);
+    }
+    
+    // main loop
+    if (steep)
+    {
+        for(int x = xpxl1 + 1; x < xpxl2 - 1;x++)
+        {
+            drawPix(floor(intery)  , x, rfpart(intery), objectIndex);
+            drawPix(floor(intery)+1, x,  fpart(intery), objectIndex);
+            intery = intery + gradient;
+        }
+    }else
+    {
+        for(int x = xpxl1 + 1; x < xpxl2 - 1;x++)
+        {
+            drawPix(x, floor(intery),  rfpart(intery), objectIndex);
+             drawPix(x, floor(intery)+1, fpart(intery), objectIndex);
+             intery = intery + gradient;
+        }
+    }
+}
+
+#pragma kernel VoronoiFracture
+
+[numthreads(8,8,1)]
+void VoronoiFracture (uint3 id : SV_DispatchThreadID)
+{
+    int objectIndex = id.x;
+    int edgeIndex = id.y;
+    if(objectIndex >= totalObjects || edgeIndex >= totalEdges)
+    {
+        return;
+    }
+    float2 worldPos = float2(transforms[objectIndex].x, transforms[objectIndex].y);
+    float rotation = transforms[objectIndex].z;
+    float2 diffInPosLeft = leftEdgeEnds[edgeIndex] - worldPos;
+    float angleLeft = atan2(diffInPosLeft.y, diffInPosLeft.x) - rotation;
+    float magLeft = sqrt(pow(diffInPosLeft.x, 2) + pow(diffInPosLeft.y, 2));
+    diffInPosLeft = float2(magLeft * cos(angleLeft) * (1/scales[objectIndex].x), magLeft * sin(angleLeft) * (1/scales[objectIndex].y));
+    float2 pixelPosLeft = diffInPosLeft * ppusAndResolutionFactors[objectIndex].x;
+    pixelPosLeft = float2(pixelPosLeft.x + spriteBounds[objectIndex].x/2, pixelPosLeft.y + spriteBounds[objectIndex].y/2);
+    float2 diffInPosRight = rightEdgeEnds[edgeIndex] - worldPos;
+    float angleRight = atan2(diffInPosRight.y, diffInPosRight.x) - rotation;
+    float magRight = sqrt(pow(diffInPosRight.x, 2) + pow(diffInPosRight.y, 2));
+    diffInPosRight = float2(magRight * cos(angleRight) * (1/scales[objectIndex].x), magRight * sin(angleRight) * (1/scales[objectIndex].y));
+    float2 pixelPosRight = diffInPosRight * ppusAndResolutionFactors[objectIndex].x;
+    pixelPosRight = float2(pixelPosRight.x + (spriteBounds[objectIndex].x/2), pixelPosRight.y + (spriteBounds[objectIndex].y/2));
+    int x0 = (int)pixelPosLeft.x;
+    int y0 = (int)pixelPosLeft.y;
+    int x1 = (int)pixelPosRight.x;
+    int y1 = (int)pixelPosRight.y;
+    //aliasedLine(x0,y0,x1,y1, objectIndex);
+    bresenhamLine(x0, y0, x1, y1, objectIndex);
+    
+}
+
+#pragma kernel CircularFracture
+
+[numthreads(8,8,1)]
+void CircularFracture (uint3 id : SV_DispatchThreadID)
+{
+    int objectIndex = id.x;
+    int distFromRadius = id.y;
+    if(objectIndex >= totalObjects)
+    {
+        return;
+    }
+    distFromRadius = distFromRadius/scales[objectIndex].y;
+    float blastRadiusPixels = (blastRadius * ppusAndResolutionFactors[objectIndex].x)/scales[objectIndex].x;
+    if(distFromRadius >= blastRadiusPixels)
+    {
+        return;
+    }
+    //TODO: think about doing object stuff separately??? idk if possible.
+    float2 worldPos = float2(transforms[objectIndex].x, transforms[objectIndex].y);
+    float rotation = transforms[objectIndex].z;
+    float2 diffInOrigin = float2(originX,originY) - worldPos;
+    float angleOrigin = atan2(diffInOrigin.y, diffInOrigin.x) - rotation;
+    float magOrigin = sqrt(pow(diffInOrigin.x, 2) + pow(diffInOrigin.y, 2));
+    diffInOrigin = float2(magOrigin * cos(angleOrigin) * (1/scales[objectIndex].x), magOrigin * sin(angleOrigin) * (1/scales[objectIndex].y));
+    float2 pixelPosOrigin = diffInOrigin * ppusAndResolutionFactors[objectIndex].x;
+    pixelPosOrigin = float2(pixelPosOrigin.x + spriteBounds[objectIndex].x/2, pixelPosOrigin.y + spriteBounds[objectIndex].y/2);
+    int amountFill = (int)round(sqrt(pow(blastRadiusPixels,2) - pow(distFromRadius,2)));
+    int x0 = (int)pixelPosOrigin.x + (int)distFromRadius;
+    int x1 = (int)pixelPosOrigin.x - (int)distFromRadius;
+    int y0 = (int)pixelPosOrigin.y;
+    for(int i = 0;i < amountFill;i++)
+    {
+        int y1 = y0 + i;
+        int y2 = y0 - i;
+        float normalizedDist = (pow(distFromRadius,2) + pow(i,2))/pow(blastRadiusPixels,2);
+        float prob1 = random(float2(x0,y1));
+        float prob2 = random(float2(x0,y2));
+        float prob3 = random(float2(x1,y1));
+        float prob4 = random(float2(x1,y2));
+        if(x0 >= 0 && x0 < spriteBounds[objectIndex].x)
+        {
+            if(y1 >= 0 && y1 < spriteBounds[objectIndex].y)
+            {
+               
+                float4 col = outputTex[uint3((x0), (y1), objectIndex)];
+                if(col.a != 0.0)
+                {
+                    hasBeenDrawnTex[uint2(objectIndex, 0)] = float((1)/65535.0);
+                }
+                if(normalizedDist - prob1 < probabilityFalloff)
+                {
+                    outputTex[uint3((x0), (y1), objectIndex)] = float4(0.0,0.0,0.0,0.0);
+                }
+                
+            }
+            if(y2 >= 0 && y2 < spriteBounds[objectIndex].y)
+            {
+                float4 col = outputTex[uint3((x0), (y2), objectIndex)];
+                if(col.a != 0.0)
+                {
+                    hasBeenDrawnTex[uint2(objectIndex, 0)] = float((1)/65535.0);
+                }
+                if(normalizedDist - prob2 < probabilityFalloff)
+                {
+                    outputTex[uint3((x0), (y2), objectIndex)] = float4(0.0,0.0,0.0,0.0);
+                }
+            }
+        }
+        if(x1 >= 0 && x1 < spriteBounds[objectIndex].x)
+        {
+            if(y1 >= 0 && y1 < spriteBounds[objectIndex].y)
+            {
+                float4 col = outputTex[uint3((x1), (y1), objectIndex)];
+                if(col.a != 0.0)
+                {
+                    hasBeenDrawnTex[uint2(objectIndex, 0)] = float((1)/65535.0);
+                }
+                if(normalizedDist - prob3 < probabilityFalloff)
+                {
+                    outputTex[uint3((x1), (y1), objectIndex)] = float4(0.0,0.0,0.0,0.0);
+                }
+            }
+            if(y2 >= 0 && y2 < spriteBounds[objectIndex].y)
+            {
+                float4 col = outputTex[uint3((x1), (y2), objectIndex)];
+                if(col.a != 0.0)
+                {
+                    hasBeenDrawnTex[uint2(objectIndex, 0)] = float((1)/65535.0);
+                }
+                if(normalizedDist - prob4 < probabilityFalloff)
+                {
+                    outputTex[uint3((x1), (y2), objectIndex)] = float4(0.0,0.0,0.0,0.0);
+                }
+            }
+        }
+    }
+}
+
+#pragma kernel ImageFracture
+
+[numthreads(8,8,8)]
+void ImageFracture (uint3 id : SV_DispatchThreadID)
+{
+    int objectIndex = id.x;
+    int pixelPosX = id.y;
+    int pixelPosY = id.z;
+    if(objectIndex >= totalObjects || (pixelPosX >= fractureImageWidth * 2) || (pixelPosY >= fractureImageHeight * 2))
+    {
+        return;
+    }
+    if(fractureImage[uint2((pixelPosX/2.0), (pixelPosY/2.0))].a == 0.0)
+    {
+        return;
+    }
+    float2 pixelPosOrigin = originPixelPositions[objectIndex];
+    float rotation = transforms[objectIndex].z;
+    float positionX = pixelPosOrigin.x;
+    float positionY = pixelPosOrigin.y;
+    float scaleFactor = 1.0;
+    if(ppusAndResolutionFactors[objectIndex].x  * (1/scales[objectIndex].x) * imageWidth > fractureImageWidth)
+    {
+        scaleFactor = (ppusAndResolutionFactors[objectIndex].x * imageWidth)/fractureImageWidth;
+    }
+    float2 translationFactor = float2(-(imageWidth/2.0) * ppusAndResolutionFactors[objectIndex].x * (1/scales[objectIndex].x), -(imageWidth/2.0) * ppusAndResolutionFactors[objectIndex].x * (1/scales[objectIndex].y) * ((float)fractureImageHeight/(float)fractureImageWidth));
+    float2 offset = float2(translationFactor.x, translationFactor.y);
+    offset = float2(cos(-rotation) * offset.x - sin(-rotation) * offset.y, sin(-rotation) * offset.x + cos(-rotation) * offset.y);
+    positionX += offset.x;
+    positionY += offset.y;
+    float2 translationFactor2 = float2(pixelPosX/2.0 * (translationFactor.x/(-fractureImageWidth/2.0)), (pixelPosY/2.0) * (translationFactor.y/(-fractureImageHeight/2.0)));
+    float2 offset2 = float2(translationFactor2.x, translationFactor2.y);
+    offset2 = float2(cos(-rotation) * offset2.x - sin(-rotation) * offset2.y, sin(-rotation) * offset2.x + cos(-rotation) * offset2.y);
+    positionX += offset2.x;
+    positionY += offset2.y;
+    if(positionX >= 0 && positionX < spriteBounds[objectIndex].x && positionY >= 0 && positionY < spriteBounds[objectIndex].y)
+    {
+        hasBeenDrawnTex[uint2(objectIndex, 0)] = float((1)/65535.0);
+        float x0 = 0;
+        float y0 = 0;
+        float yf = 0;
+        float xf = 0;
+        if(pixelPosX >= fractureImageWidth/2.0)
+        {
+            x0 = -scaleFactor;
+            xf = 0;
+        }else
+        {
+            x0 = 0;
+            xf = scaleFactor;
+        }
+        if(pixelPosY >= fractureImageHeight/2.0)
+        {
+            y0 = -scaleFactor;
+            yf = 0;
+        }else
+        {
+            y0 = 0;
+            yf = scaleFactor;
+        }
+        for(float x = x0;x < xf;x++)
+        {
+            for (float y = y0;y < yf;y++)
+            {
+                float4 col = outputTex[uint3((round(positionX + x)), (round(positionY + y)), objectIndex)];
+                outputTex[uint3((round(positionX + x)), (round(positionY + y)), objectIndex)] = float4(col.r,col.g,col.b,(1.0 - fractureImage[uint2((pixelPosX/2.0), (pixelPosY/2.0))].a) * col.a);
+            }
+        }
+        
+        /*float xError = positionX - floor(positionX);
+        float yError = positionY - floor(positionY);
+        if(xError > 0.5)
+        {
+            outputTex[uint3((round(positionX + 1)), (round(positionY)), objectIndex)] = float4(0.0,0.0,0.0,0.0);
+        }else if(xError < 0.5)
+        {
+            outputTex[uint3((round(positionX - 1)), (round(positionY)), objectIndex)] = float4(0.0,0.0,0.0,0.0);
+        }
+        if(yError > 0.5)
+        {
+            outputTex[uint3((round(positionX)), (round(positionY + 1)), objectIndex)] = float4(0.0,0.0,0.0,0.0);
+        }else if(yError < 0.5)
+        {
+            outputTex[uint3((round(positionX)), (round(positionY - 1)), objectIndex)] = float4(0.0,0.0,0.0,0.0);
+        }*/
+    }
+   // hasBeenDrawnTex[uint2(objectIndex, 0)] = float(((float)numberDrawn)/65535.0);
+}
+
+#pragma kernel AntiAlias
+
+[numthreads(8,8,8)]
+void AntiAlias (uint3 id : SV_DispatchThreadID)
+{
+    int x = id.y;
+    int y = id.z;
+    if(id.x >= totalObjects)
+    {
+        return;
+    }
+    int objectIndex = indicesBuffer[id.x];
+    if(x < 0 || x >= spriteBounds[id.x].x || y < 0 || y >= spriteBounds[id.x].y)
+    {
+        return;
+    }
+    //antiAliasTex[uint2(x, y)] = float4(255.0, 0.0, 0.0,255.0);
+    /*float4 col = antiAliasTex[uint2(x, y)];
+    antiAliasTex[uint2(x, y)] = float4(col.r / 2.0, col.g /2.0, col.b/2.0, col.a);*/
+    int solidCount = 0;
+    float totalAlpha = 0;
+    float4 totalColor = float4(0,0,0,0);
+    for(int x0 = -1;x0 <= 1;x0++)
+    {
+        for(int y0 = -1;y0 <= 1;y0++)
+        {
+            if(x + x0 >= 0 && x + x0 < spriteBounds[id.x].x && y + y0 >= 0 && y + y0 < spriteBounds[id.x].y)
+            {
+                if(outputTex[uint3(x + x0, y + y0, objectIndex)].a > 0.0)
+                {
+                    float4 col = outputTex[uint3(x + x0, y + y0, objectIndex)];
+                    if(y0 == 0 || x0 == 0)
+                    {
+                        col = col * 2;
+                        solidCount += 1;
+                    }
+                    totalAlpha += col.a;
+                    totalColor += col;
+                    solidCount += 1;
+                }
+            }else
+            {
+                float4 col = outputTex[uint3(x, y, objectIndex)];
+                if(y0 == 0 || x0 == 0)
+                {
+                    col = col * 2;
+                    solidCount += 1;
+                }
+                totalAlpha += col.a;
+                totalColor += col;
+                solidCount += 1;
+            }
+        }
+    }
+    if(solidCount < 14)
+    {
+        float4 col = totalColor/solidCount;
+        outputTex[uint3(x, y,objectIndex)] = float4(col.r, col.g, col.b, totalAlpha/14.0);
+    }
+   
 }

@@ -191,7 +191,7 @@ public class PolygonDetector
             searchOn = false;
             detectedPolygons.Add(polygon);
             currentID++;
-            colorToShade = new Color(colorToShade.r + 0.02f, colorToShade.g + 0.02f, colorToShade.b + 0.02f);
+            colorToShade = new Color(colorToShade.r + 0.1f, colorToShade.g + 0.1f, colorToShade.b + 0.1f);
             if (polygonEntrance.HasValue && SearchNextHullEntrance(detectedPolygons, polygonEntrance.Value, out polygonEntrance))
             {
                 searchOn = true;
