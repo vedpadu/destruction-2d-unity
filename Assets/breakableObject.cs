@@ -17,8 +17,9 @@ using Color = UnityEngine.Color;
 using Object = System.Object;
 using Vector2 = UnityEngine.Vector2;
 using Vector3 = UnityEngine.Vector3;
+using Mirror;
 
-public class breakableObject : MonoBehaviour
+public class breakableObject : NetworkBehaviour
 {
     public Texture2D spriteTx;
     public Texture2D preAliasedTx;
@@ -27,12 +28,13 @@ public class breakableObject : MonoBehaviour
     [Tooltip("Updates this object on destruction to avoid one instantiate call. Only possible if the new destroyed prefab is the same as " +
              "this object, as this object will preserve all its properties other than its collider and texture.")]
     public bool preserveThisObject;
-    
+
     [HideInInspector] public float ppu;
     [HideInInspector] public int texWidth;
     [HideInInspector] public int texHeight;
     [HideInInspector] public SpriteRenderer sR;
     [SerializeField] private GameObject destroyedPrefab;
+    [SerializeField] private GameObject debrisPrefab; 
     private Rigidbody2D rb;
 
     [HideInInspector] public Color32[] pixelData;
@@ -41,7 +43,7 @@ public class breakableObject : MonoBehaviour
     [SerializeField] private Texture2D debugTexture;
     [SerializeField] private MeshRenderer debugQuad;
     private PolygonDetector detector;
-    
+
     private bool isOrig = true;
 
     [HideInInspector] public bool dirty;
@@ -61,7 +63,7 @@ public class breakableObject : MonoBehaviour
     private ComputeShader colliderGenerator;
     private int kiHoleFinderViaVertices;
     private int kiGetPixelCountsAndTextures;
-    
+
     [HideInInspector]
     public bool holesFinalized;
     [HideInInspector]
@@ -74,14 +76,31 @@ public class breakableObject : MonoBehaviour
     private int[] pixelCountsResults;
     private int totalPixels;
     private Color32[][] allPixelData;
-    [SerializeField]private Texture2D[] allTextures;
+    [SerializeField] private Texture2D[] allTextures;
     [SerializeField] private Texture2D[] allTexturesAntiAlias;
-    private bool isWorking = false;
+    [HideInInspector]
+    public bool isWorking = false;
+    private bool breakCalled = false;
 
     public bool doAntiAliasing = true;
     [HideInInspector] public bool antiAliased = false;
     public List<Transform> roots;
     [HideInInspector] public List<int>[] objectRootIDArray;
+
+    // NETWORKING STUFF
+    public Dictionary<int, GameObject> prefabIndDict = new Dictionary<int, GameObject>();
+    public bool serverDoneDestroying;
+    public bool clientDoneDestroying;
+    private PolygonCollider2D[] colliderArray;
+    private Vertices[] vertArrayCache;
+    private int[] pixelCountsCache;
+    private float[] massCache;
+    // TODO: edge cases like client disconnect
+    //[HideInInspector]
+    public int numFinishedClients;
+    private NetworkIdentity netIdentity;
+    private int serverNumDetected;
+    PrototypeHeroDemo localPlayer;
 
     void Awake()
     {
@@ -91,6 +110,10 @@ public class breakableObject : MonoBehaviour
     {
         detector = new PolygonDetector();
         sR = GetComponent<SpriteRenderer>();
+        numFinishedClients = NetworkServer.connections.Count;
+        netIdentity = GetComponent<NetworkIdentity>();
+        //
+        //    GetComponent<NetworkIdentity>().AssignClientAuthority(NetworkClient.localPlayer.GetComponent<NetworkIdentity>().connectionToClient);
         if (isOrig)
         {
             double timeInstantiating = Time.realtimeSinceStartup;
@@ -130,6 +153,10 @@ public class breakableObject : MonoBehaviour
     // Update is called once per frame
     void Update()
     {
+        if (localPlayer == null && isClient)
+        {
+            localPlayer = NetworkClient.localPlayer.gameObject.GetComponent<PrototypeHeroDemo>();
+        }
         if (Input.GetKeyDown(KeyCode.U) && canBreak)
         {
             BreakObject(detector.allPolygons, detector.holeArray, detector.pixelCounts, detector.totalPixels, detector.shapeExtremeties);
@@ -140,6 +167,8 @@ public class breakableObject : MonoBehaviour
         }
         if (dirty && !isWorking)
         {
+            sR.sprite = Sprite.Create(spriteTx, new Rect(0.0f, 0.0f, spriteTx.width, spriteTx.height), new Vector2(0.5f, 0.5f),
+                sR.sprite.pixelsPerUnit);
             DetectPolygons(true);
             dirty = false;
         }
@@ -149,33 +178,180 @@ public class breakableObject : MonoBehaviour
     {
         if (doBreak && colorsFinalized && holesFinalized && countsFinalized)
         {
-           /* debugTexture = new Texture2D((int)(texWidth * resolutionFactorDecimal), (int)(texHeight * resolutionFactorDecimal));
-            debugTexture.SetPixels(debugPixels);
-            debugTexture.filterMode = FilterMode.Point;
-            debugTexture.Apply();
+            /* debugTexture = new Texture2D((int)(texWidth * resolutionFactorDecimal), (int)(texHeight * resolutionFactorDecimal));
+             debugTexture.SetPixels(debugPixels);
+             debugTexture.filterMode = FilterMode.Point;
+             debugTexture.Apply();
+
+             for (int i = 0; i < holes.Length; i++)
+             {
+                 print(holes[i]);
+             }
+
+             for (int i = 0; i < pixelCountsResults.Length; i++)
+             {
+                 print(pixelCountsResults[i]);
+             }
+             for (int i = 0; i < detector.allPolygons.Count; i++)
+             {
+                 string s = "";
+                 for (int j = 0; j < detector.allPolygons[i].Count; j++)
+                 {
+                     s += "(" + detector.allPolygons[i][j].x + ", " + detector.allPolygons[i][j].y + "), ";
+                 }
+                 print(s);
+             }*/
+            //  doBreak = false;
+            breakCalled = true;
+            //isWorking = false;
+            //if (isServer)
+            //{
+            //    setServerNumDetected(detector.allPolygons.Count);
+            //}
             
-            for (int i = 0; i < holes.Length; i++)
+            BreakObject(detector.allPolygons, holes, pixelCountsResults, totalPixels, detector.shapeExtremeties);
+            if (isClientOnly)
             {
-                print(holes[i]);
+                isWorking = false;
+                breakCalled = false;
+            }
+        }
+        if (clientDoneDestroying && serverDoneDestroying && isClient)
+        {
+            foreach (int i in prefabIndDict.Keys)
+            {
+                try
+                {
+                    // Attempt to access an element outside the array bounds
+                    if (i < allTextures.Length)
+                    {
+                        prefabIndDict[i].GetComponent<SpriteRenderer>().sprite = Sprite.Create(allTextures[i], new Rect(0, 0, allTextures[i].width, allTextures[i].height), new Vector2(0.5f, 0.5f),
+          sR.sprite.pixelsPerUnit, 0, SpriteMeshType.FullRect); 
+                    }
+                    
+                }
+                catch (IndexOutOfRangeException ex)
+                {
+                    print("EXCEPTION: " + i + ", " + allTextures.Length);
+                    throw (ex);
+                }
+                prefabIndDict[i].transform.localScale = transform.localScale;
+                breakableObject breakableScript = prefabIndDict[i].GetComponent<breakableObject>();
+                breakableScript.enabled = true;
+                PolygonCollider2D poly = prefabIndDict[i].GetComponent<PolygonCollider2D>();
+                poly.isTrigger = false;
+                if (vertArrayCache[i].Count > 2)
+                {
+                    poly.pathCount = 1;
+                    poly.SetPath(0, vertArrayCache[i]);
+                    breakableScript.isOrig = false;
+                    //TODO: do txPixels and spriteTx set here? though i suppose it has to be done after the sprite.create?
+                    breakableScript.ppu = ppu;
+                    breakableScript.texWidth = allTextures[i].width;
+                    breakableScript.texHeight = allTextures[i].height;
+                    breakableScript.colliderGenerator = colliderGenerator;
+                    breakableScript.kiHoleFinderViaVertices = kiHoleFinderViaVertices;
+                    breakableScript.kiGetPixelCountsAndTextures = kiGetPixelCountsAndTextures;
+                    breakableScript.resolutionFactorDecimal = resolutionFactorDecimal;
+                    breakableScript.pixelCount = pixelCountsCache[i];
+                    breakableScript.distanceThreshold = distanceThreshold;
+                    breakableScript.doAntiAliasing = doAntiAliasing;
+                    breakableScript.preAliasedTx = allTexturesAntiAlias[i];
+                    breakableScript.antiAliased = false;
+                    breakableScript.destroyedPrefab = destroyedPrefab;
+                    breakableScript.debrisPrefab = debrisPrefab;
+                }
+                else
+                {
+                    breakableScript.enabled = false;
+                    poly.enabled = false;
+                    Destroy(prefabIndDict[i], 3f);
+                }
+
+
+                if (totalPixels > 0)
+                {
+                    breakableScript.rb = prefabIndDict[i].GetComponent<Rigidbody2D>();
+                    breakableScript.rb.bodyType = RigidbodyType2D.Dynamic;
+                    breakableScript.rb.mass = massCache[i];
+                    //if (rootIDArray.Count > 0)
+                    //{
+                    //    breakableScript.rb.isKinematic = true;
+                    //    for (int k = 0; k < rootIDArray.Count; k++)
+                    //    {
+                    //        breakableScript.roots.Add(roots[rootIDArray[k]]);
+                    //        roots[rootIDArray[k]].parent = breakableScript.transform;
+                    //    }
+                    //}
+                    //else
+                    //{
+                    //    breakableScript.rb.isKinematic = false;
+                    //}
+                }
+
+                //TODO: figure out how to make this sprite mesh generation quicker or eliminate it by passing in a mesh.
+                //if (extremities[1] == extremities[0])
+                //{
+                //    extremities[1] += 1;
+                //}
+                //if (extremities[2] == extremities[3])
+                //{
+                //    extremities[3] += 1;
+                //}
+                //float pivotX = (((texWidth * resolutionFactorDecimal) / 2f) - (extremities[0])) / (extremities[1] - extremities[0]);
+                //float pivotY = (((texHeight * resolutionFactorDecimal) / 2f) - (extremities[2])) / (extremities[3] - extremities[2]);
+
+                ////Console.WriteLine($"Name: {name}");
+            }
+            serverDoneDestroying = false;
+            clientDoneDestroying = false;
+            localPlayer.setBreakableObjectClientFinished(this);
+            //StartCoroutine(TempWaitClientFinished());
+        }
+        if (isWorking)
+        {
+            if (isServer)
+            {
+
+                print("waiting for client catchup: " + numFinishedClients);
             }
 
-            for (int i = 0; i < pixelCountsResults.Length; i++)
+            if ((numFinishedClients == NetworkServer.connections.Count) && isServer && breakCalled)
             {
-                print(pixelCountsResults[i]);
+                isWorking = false;
+                breakCalled = false;
             }
-            for (int i = 0; i < detector.allPolygons.Count; i++)
-            {
-                string s = "";
-                for (int j = 0; j < detector.allPolygons[i].Count; j++)
-                {
-                    s += "(" + detector.allPolygons[i][j].x + ", " + detector.allPolygons[i][j].y + "), ";
-                }
-                print(s);
-            }*/
-          //  doBreak = false;
-           BreakObject(detector.allPolygons, holes, pixelCountsResults, totalPixels, detector.shapeExtremeties);
-            isWorking = false;
+                
         }
+        else
+        {
+            //print("set on accident");
+            numFinishedClients = NetworkServer.connections.Count;
+        }
+    }
+
+    IEnumerator TempWaitClientFinished()
+    {
+        float timer = 0f;
+        while (timer < 1.0f)
+        {
+            timer += Time.deltaTime; // Increment timer by the time passed since last frame
+            yield return null; // Pause execution and resume in the next frame
+        }
+        if (isClient)
+        {
+            print(NetworkClient.localPlayer.gameObject);
+            localPlayer.setBreakableObjectClientFinished(this);
+            //netIdentity.AssignClientAuthority();
+            //setClientFinished();
+            //netIdentity.RemoveClientAuthority();
+        }
+        //else
+        //{
+        //    numFinishedClients += 1;
+        //}
+
+        print("client actyally finished waited");
     }
 
     public void DetectPolygons(bool breakObject)
@@ -192,6 +368,7 @@ public class breakableObject : MonoBehaviour
         detector.resolutionFactor = resolutionFactorDecimal;
         detector.height = texHeight;
         detector.arrayWidth = pixelDataTextureWidth;
+        //detector.DetectPolygonsUnthread();
         ThreadPool.QueueUserWorkItem(detector.DetectPolygons);
     }
 
@@ -210,7 +387,7 @@ public class breakableObject : MonoBehaviour
                 debugTexture.Apply();
                 debugQuad.material.mainTexture = debugTexture;
             }
-                    
+
         }
         //spriteTx.SetPixels32(detector.allColsDebug);
         //spriteTx.Apply();
@@ -220,10 +397,10 @@ public class breakableObject : MonoBehaviour
         }
         if (doBreak)
         {
-           // BreakObject(detector.result, detector.polygonCounts, detector.polygonStartIndices, detector.holeArray, detector.textureArray, detector.pixelCounts, detector.totalPixels);
+            // BreakObject(detector.result, detector.polygonCounts, detector.polygonStartIndices, detector.holeArray, detector.textureArray, detector.pixelCounts, detector.totalPixels);
         }
     }
-    
+
     void DoCollidersAndFilling(List<Vector2> hullVerticesUnSimp, List<int> polygonCounts, List<int> polygonStartIndices, int[] idArray)
     {
         //polygonTextures = new Texture2DArray(texWidth, texHeight, polygonCounts.Count, TextureFormat.ARGB32, false);
@@ -327,8 +504,8 @@ public class breakableObject : MonoBehaviour
         //print("Overhead: " + (Time.realtimeSinceStartup - start));
         //colliderGenerator.Dispatch(kiSimplifyCollider, Mathf.CeilToInt(polygonCounts.Count/8f), 1, 1);
         //colliderGenerator.Dispatch(kiHoleFinder, Mathf.CeilToInt((texHeight * resolutionFactor) / 64f), 1, 1);
-        colliderGenerator.Dispatch(kiHoleFinderViaVertices, Mathf.CeilToInt(polygonCounts.Count/8f), 1, 1);
-        colliderGenerator.Dispatch(kiGetPixelCountsAndTextures, Mathf.CeilToInt((texHeight * resolutionFactorDecimal)/32f), 1, 1);
+        colliderGenerator.Dispatch(kiHoleFinderViaVertices, Mathf.CeilToInt(polygonCounts.Count / 8f), 1, 1);
+        colliderGenerator.Dispatch(kiGetPixelCountsAndTextures, Mathf.CeilToInt((texHeight * resolutionFactorDecimal) / 32f), 1, 1);
         // debugPixels = new Color[debugPixels.Length];
         //int[] debugResults = new int[idArray.Length];
         holes = new int[polygonCounts.Count];
@@ -386,7 +563,7 @@ public class breakableObject : MonoBehaviour
                         Int16[] data = request.GetData<Int16>().ToArray();
                         for (int i = 0; i < data.Length; i++)
                         {
-                            int x = (int) data[i];
+                            int x = (int)data[i];
                             if (x < 0)
                             {
                                 x += 65536;
@@ -416,7 +593,7 @@ public class breakableObject : MonoBehaviour
                             Int16[] data = request.GetData<Int16>().ToArray();
                             for (int i = 0; i < data.Length; i++)
                             {
-                                int x = (int) data[i];
+                                int x = (int)data[i];
                                 if (x < 0)
                                 {
                                     x += 65536;
@@ -446,7 +623,7 @@ public class breakableObject : MonoBehaviour
                         {
                             if (j < pixelCountsResults.Length)
                             {
-                                pixelCountsResults[j] = (int) dataPixelCounts[j];
+                                pixelCountsResults[j] = (int)dataPixelCounts[j];
                                 totalPixels += dataPixelCounts[j];
                             }
                         }
@@ -486,27 +663,27 @@ public class breakableObject : MonoBehaviour
                                                 extremities[1] += 1;
                                                 extremities[3] += 1;
                                                 // allPixelData[i] = request.GetData<Color32>(i).ToArray();
-                                                int wid = (extremities[1] - extremities[0]) * (int) (1 / resolutionFactorDecimal);
-                                                int hei = (extremities[3] - extremities[2]) * (int) (1 / resolutionFactorDecimal);
-                                                if (extremities[1] * (1/resolutionFactorDecimal) > polygonTextures.width)
+                                                int wid = (extremities[1] - extremities[0]) * (int)(1 / resolutionFactorDecimal);
+                                                int hei = (extremities[3] - extremities[2]) * (int)(1 / resolutionFactorDecimal);
+                                                if (extremities[1] * (1 / resolutionFactorDecimal) > polygonTextures.width)
                                                 {
-                                                    wid = polygonTextures.width - (extremities[0] * (int) (1 / resolutionFactorDecimal));
+                                                    wid = polygonTextures.width - (extremities[0] * (int)(1 / resolutionFactorDecimal));
                                                 }
-                                                if (extremities[3] * (1/resolutionFactorDecimal) > polygonTextures.height)
+                                                if (extremities[3] * (1 / resolutionFactorDecimal) > polygonTextures.height)
                                                 {
-                                                    hei = polygonTextures.height - (extremities[2] * (int) (1 / resolutionFactorDecimal));
+                                                    hei = polygonTextures.height - (extremities[2] * (int)(1 / resolutionFactorDecimal));
                                                 }
                                                 allTextures[i] = new Texture2D(wid, hei, TextureFormat.ARGB32, false);
                                                 allTextures[i].filterMode = sR.sprite.texture.filterMode;
                                                 allTexturesAntiAlias[i] =
                                                     new Texture2D(wid, hei, TextureFormat.ARGB32, false);
                                                 allTexturesAntiAlias[i].filterMode = sR.sprite.texture.filterMode;
-                                                Graphics.CopyTexture(polygonTexturesPreAlias, i, 0, extremities[0] * (int)(1/resolutionFactorDecimal), extremities[2] * (int)(1/resolutionFactorDecimal), allTextures[i].width, allTextures[i].height, allTexturesAntiAlias[i], 0, 0, 0, 0);
-                                                Graphics.CopyTexture(polygonTextures, i, 0, extremities[0] * (int)(1/resolutionFactorDecimal), extremities[2] * (int)(1/resolutionFactorDecimal), allTextures[i].width, allTextures[i].height, allTextures[i], 0, 0, 0, 0);
+                                                Graphics.CopyTexture(polygonTexturesPreAlias, i, 0, extremities[0] * (int)(1 / resolutionFactorDecimal), extremities[2] * (int)(1 / resolutionFactorDecimal), allTextures[i].width, allTextures[i].height, allTexturesAntiAlias[i], 0, 0, 0, 0);
+                                                Graphics.CopyTexture(polygonTextures, i, 0, extremities[0] * (int)(1 / resolutionFactorDecimal), extremities[2] * (int)(1 / resolutionFactorDecimal), allTextures[i].width, allTextures[i].height, allTextures[i], 0, 0, 0, 0);
                                                 //allTexturesAntiAlias[i].Apply();
                                             }
                                         }
-                        
+
                                         if (doBreak)
                                         {
                                             colorsFinalized = true;
@@ -519,7 +696,7 @@ public class breakableObject : MonoBehaviour
                                         print("error");
                                     }
                                 }));
-                        
+
                     }
                     else
                     {
@@ -537,6 +714,10 @@ public class breakableObject : MonoBehaviour
         polyHoleResults.Release();
         pixelCounts.Release();
         rootBuffer.Release();
+        string addString = "";
+        if (serverNumDetected != detector.allPolygons.Count)
+            addString = " ISSUE";
+        //print()
         //print("Time for post processing data: " + (Time.realtimeSinceStartup - startTimePostProcess));
     }
 
@@ -547,7 +728,30 @@ public class breakableObject : MonoBehaviour
 
     void BreakObject(List<Vertices> allVerts, int[] finalHoleResults, int[] pixelCounts, int totalPixels, List<int[]> extremities)
     {
-        PolygonCollider2D[] colliderArray = new PolygonCollider2D[allVerts.Count];
+        if (isServer)
+        {
+            numFinishedClients = 0;
+            print("CONNECTIONS: " + NetworkServer.connections.Keys.ToList().Count);
+            clearDestroyedPrefabClient();
+            setServerNumDetected(allVerts.Count);
+        }
+        else
+        {
+            string toadd = "";
+            if (serverNumDetected != allVerts.Count)
+            {
+                toadd = " PROBLEM!!";
+            }
+            print("Detector vert count: " + allVerts.Count + ", texture count: " + allTextures.Length + ", server detect count: " + serverNumDetected + toadd);
+            if (serverNumDetected != allVerts.Count)
+            {
+                return;
+            }
+        }
+        colliderArray = new PolygonCollider2D[allVerts.Count];
+        vertArrayCache = new Vertices[allVerts.Count];
+        massCache = new float[allVerts.Count];
+        pixelCountsCache = pixelCounts;
         PolygonCollider2D col = GetComponent<PolygonCollider2D>();
         col.pathCount = 0;
         float mass = rb.mass;
@@ -585,9 +789,13 @@ public class breakableObject : MonoBehaviour
             }
             else
             {
-                if (i < finalHoleResults.Length && finalHoleResults[i] == i && i < extremities.Count && i < pixelCounts.Length && allTextures[i] != null)
+                if (i < finalHoleResults.Length && finalHoleResults[i] == i && i < extremities.Count && i < pixelCounts.Length && allTextures[i] != null && isServer)
                 {
                     InstantiateNewObject(allVerts[i], pixelCounts[i], ref colliderArray, i, mass, extremities[i], origPos, origWidth, origHeight, objectRootArray[i]);
+                }
+                if (i < finalHoleResults.Length && finalHoleResults[i] == i && i < extremities.Count && i < pixelCounts.Length && allTextures[i] != null && isClient)
+                {
+                    processNewObjectClient(allVerts[i], pixelCounts[i], ref colliderArray, i, mass, extremities[i], origPos, origWidth, origHeight, objectRootArray[i]);
                 }
             }
         }
@@ -596,44 +804,57 @@ public class breakableObject : MonoBehaviour
             if (i < finalHoleResults.Length && finalHoleResults[i] != i && finalHoleResults[i] < extremities.Count && finalHoleResults[i] < colliderArray.Length)
             {
                 print(finalHoleResults[i] + " list count: " + colliderArray.Length + " all Vert Count: " + allVerts.Count);
-                ProcessHoleObject(allVerts[i], colliderArray[finalHoleResults[i]], extremities[finalHoleResults[i]]);
+                ProcessHoleObject(allVerts[i], colliderArray[finalHoleResults[i]], extremities[finalHoleResults[i]], i);
             }
         }
-        if (!preserveThisObject)
+        print("isServer: " + isServer);
+        print("isLoc: " + isClient);
+        if (isServer)
         {
-            Destroy(this.gameObject);
-        }
-        else
-        {
-           List<Transform> toRemove = new List<Transform>();
-            for (int i = 0; i < rootPolygons.Length; i++)
+            print("Heyyyyy...");
+            setServerDone();
+            if (!preserveThisObject)
             {
-                if (rootPolygons[i] != firstObjectIndex)
+                Destroy(this.gameObject);
+            }
+            else
+            {
+                List<Transform> toRemove = new List<Transform>();
+                for (int i = 0; i < rootPolygons.Length; i++)
                 {
-                    toRemove.Add(roots[i]);
+                    if (rootPolygons[i] != firstObjectIndex)
+                    {
+                        toRemove.Add(roots[i]);
+                    }
                 }
-            }
-            for (int i = 0; i < toRemove.Count; i++)
-            {
-                roots.Remove(toRemove[i]);
-            };
-            if (col.pathCount < 2)
-            {
-                if (col.pathCount > 0)
+                for (int i = 0; i < toRemove.Count; i++)
                 {
-                    if (col.GetPath(0).Length <= 2)
+                    roots.Remove(toRemove[i]);
+                }
+                ;
+                if (col.pathCount < 2)
+                {
+                    if (col.pathCount > 0)
+                    {
+                        if (col.GetPath(0).Length <= 2)
+                        {
+                            col.enabled = false;
+                            Destroy(this.gameObject, 3f);
+                        }
+                    }
+                    else
                     {
                         col.enabled = false;
                         Destroy(this.gameObject, 3f);
                     }
                 }
-                else
-                {
-                    col.enabled = false;
-                    Destroy(this.gameObject, 3f);
-                }
             }
         }
+        if (isClient)
+        {
+            clientDoneDestroying = true;
+        }
+
     }
 
     void ProcessVerts(ref Vertices verts, int pixelCountObject, int[] extremities)
@@ -645,8 +866,8 @@ public class breakableObject : MonoBehaviour
         verts = SimplifyTools.DouglasPeuckerSimplify(verts, distanceThreshold);
         for (int j = 0; j < verts.Count; j++)
         {
-            float xValue = ((verts[j].x - (float) ((extremities[1] + extremities[0])/2f))/ppu) * (1/resolutionFactorDecimal);
-            float yValue = ((verts[j].y - (float) ((extremities[3] + extremities[2])/2f))/ppu) * (1/resolutionFactorDecimal);
+            float xValue = ((verts[j].x - (float)((extremities[1] + extremities[0]) / 2f)) / ppu) * (1 / resolutionFactorDecimal);
+            float yValue = ((verts[j].y - (float)((extremities[3] + extremities[2]) / 2f)) / ppu) * (1 / resolutionFactorDecimal);
             verts[j] = new Vector2(xValue, yValue);
         }
     }
@@ -655,8 +876,8 @@ public class breakableObject : MonoBehaviour
     {
         ProcessVerts(ref verts, pixelCountObject, extremities);
         PolygonCollider2D poly = GetComponent<PolygonCollider2D>();
-        float diffX = ((extremities[1] * (1/resolutionFactorDecimal) + extremities[0] * (1/resolutionFactorDecimal))  / 2f - (origWidth / 2f)) / ppu;
-        float diffY = ((extremities[3] * (1/resolutionFactorDecimal) + extremities[2] * (1/resolutionFactorDecimal)) / 2f - (origHeight / 2f)) / ppu;
+        float diffX = ((extremities[1] * (1 / resolutionFactorDecimal) + extremities[0] * (1 / resolutionFactorDecimal)) / 2f - (origWidth / 2f)) / ppu;
+        float diffY = ((extremities[3] * (1 / resolutionFactorDecimal) + extremities[2] * (1 / resolutionFactorDecimal)) / 2f - (origHeight / 2f)) / ppu;
         float angle = transform.rotation.eulerAngles.z * Mathf.Deg2Rad;
         Vector2 diff = new Vector2(Mathf.Cos(angle) * diffX - Mathf.Sin(angle) * diffY, Mathf.Sin(angle) * diffX + Mathf.Cos(angle) * diffY);
         Vector3 pos = origPos;
@@ -669,7 +890,7 @@ public class breakableObject : MonoBehaviour
                 rootPosArray[k] = roots[rootIDArray[k]].position;
             }
             rb.isKinematic = true;
-        }else
+        } else
         {
             rb.isKinematic = false;
         }
@@ -693,7 +914,7 @@ public class breakableObject : MonoBehaviour
         holesFinalized = false;
         antiAliased = false;
         poly.pathCount += 1;
-       // print( poly.pathCount + " " + verts.Count + " regulah");
+        // print( poly.pathCount + " " + verts.Count + " regulah");
         poly.SetPath(poly.pathCount - 1, verts.ToArray());
         isOrig = false;
         pixelCount = pixelCountObject;
@@ -709,16 +930,99 @@ public class breakableObject : MonoBehaviour
         {
             extremities[3] += 1;
         }
-        float pivotX = (((texWidth * resolutionFactorDecimal) / 2f) - (extremities[0]))/(extremities[1] - extremities[0]);
-        float pivotY = (((texHeight * resolutionFactorDecimal) / 2f) - (extremities[2]))/(extremities[3] - extremities[2]);
+        float pivotX = (((texWidth * resolutionFactorDecimal) / 2f) - (extremities[0])) / (extremities[1] - extremities[0]);
+        float pivotY = (((texHeight * resolutionFactorDecimal) / 2f) - (extremities[2])) / (extremities[3] - extremities[2]);
         // print(i + ": left extreme: " + extremities[i][0] + ", right extreme: " + extremities[i][1] + ", bottom extreme: " + extremities[i][2] + ", top extreme: " + extremities[i][3] + ", pivotX: " + pivotX + ", pivot Y: " + pivotY);
         sR.sprite = Sprite.Create(spriteTx, new Rect(0, 0, spriteTx.width, spriteTx.height), new Vector2(0.5f, 0.5f),
             sR.sprite.pixelsPerUnit, 0, SpriteMeshType.FullRect);
     }
 
+    //void spawnDestroyedObject(Vertices verts, int pixelCountObject, ref PolygonCollider2D[] colliderArray, int i, float totalMass, int[] extremities, Vector3 origPos, int origWidth, int origHeight, List<int> rootIDArray)
+    //{
+    //    float diffX = ((extremities[1] * (1 / resolutionFactorDecimal) + extremities[0] * (1 / resolutionFactorDecimal)) / 2f - (origWidth / 2f)) / ppu;
+    //    float diffY = ((extremities[3] * (1 / resolutionFactorDecimal) + extremities[2] * (1 / resolutionFactorDecimal)) / 2f - (origHeight / 2f)) / ppu;
+    //    float angle = transform.rotation.eulerAngles.z * Mathf.Deg2Rad;
+    //    Vector2 diff = new Vector2(Mathf.Cos(angle) * diffX - Mathf.Sin(angle) * diffY, Mathf.Sin(angle) * diffX + Mathf.Cos(angle) * diffY);
+    //    Vector3 pos = origPos;
+    //    pos = new Vector3(pos.x + (diff.x * transform.localScale.x), pos.y + (diff.y * transform.localScale.y), pos.z);
+    //    GameObject destroyedPart = GameObject.Instantiate(destroyedPrefab, pos, transform.rotation);
+    //    NetworkServer.Spawn(destroyedPart);
+    //}
+
+    //void assignDestroyedPartProperties(Vector3 origPos, int[] extremities, int origWidth, int origHeight)
+    //{
+    //    ProcessVerts(ref verts, pixelCountObject, extremities);
+
+    //}
+
+    //InstantiateNewObject(allVerts[i], pixelCounts[i], ref colliderArray, i, mass, extremities[i], origPos, origWidth, origHeight, objectRootArray[i]);
+
+    [ClientRpc]
+    void updateDestroyedPrefabClient(GameObject pref, int i)
+    {
+        prefabIndDict.Add(i, pref);
+        print("yooo: " + i);
+        //pref.SetActive(false);
+
+    }
+
+    [ClientRpc]
+    void clearDestroyedPrefabClient()
+    {
+        prefabIndDict.Clear();
+        //pref.SetActive(false);
+
+    }
+
+    [ClientRpc]
+    void setServerDone()
+    {
+        serverDoneDestroying = true;
+        print("SERVER DONE!!");
+        //pref.SetActive(false);
+
+    }
+
+    [ClientRpc]
+    void setServerNumDetected(int val)
+    {
+        serverNumDetected = val;
+    }
+
+    [Command]
+    void setClientFinished()
+    {
+        print("IN COMMAND");
+        print(numFinishedClients);
+        numFinishedClients += 1;
+        print(numFinishedClients);
+    }
+
+    void processNewObjectClient(Vertices verts, int pixelCountObject, ref PolygonCollider2D[] colliderArray, int i, float totalMass, int[] extremities, Vector3 origPos, int origWidth, int origHeight, List<int> rootIDArray)
+    {
+        ProcessVerts(ref verts, pixelCountObject, extremities);
+        massCache[i] = totalMass * ((float)pixelCountObject / totalPixels);
+        vertArrayCache[i] = verts;
+        if (verts.Count <= 2)
+        {
+            float diffX = ((extremities[1] * (1 / resolutionFactorDecimal) + extremities[0] * (1 / resolutionFactorDecimal)) / 2f - (origWidth / 2f)) / ppu;
+            float diffY = ((extremities[3] * (1 / resolutionFactorDecimal) + extremities[2] * (1 / resolutionFactorDecimal)) / 2f - (origHeight / 2f)) / ppu;
+            float angle = transform.rotation.eulerAngles.z * Mathf.Deg2Rad;
+            Vector2 diff = new Vector2(Mathf.Cos(angle) * diffX - Mathf.Sin(angle) * diffY, Mathf.Sin(angle) * diffX + Mathf.Cos(angle) * diffY);
+            Vector3 pos = origPos;
+            pos = new Vector3(pos.x + (diff.x * transform.localScale.x), pos.y + (diff.y * transform.localScale.y), pos.z);
+            GameObject destroyedPart = GameObject.Instantiate(debrisPrefab, pos, transform.rotation);
+            destroyedPart.transform.localScale = transform.localScale;
+            Destroy(destroyedPart, 3f);
+            destroyedPart.GetComponent<SpriteRenderer>().sprite = Sprite.Create(allTextures[i], new Rect(0, 0, allTextures[i].width, allTextures[i].height), new Vector2(0.5f, 0.5f),
+           sR.sprite.pixelsPerUnit, 0, SpriteMeshType.FullRect);
+        }
+    }
+
     void InstantiateNewObject(Vertices verts, int pixelCountObject, ref PolygonCollider2D[] colliderArray, int i, float totalMass, int[] extremities, Vector3 origPos, int origWidth, int origHeight, List<int> rootIDArray)
     {
         ProcessVerts(ref verts, pixelCountObject, extremities);
+        vertArrayCache[i] = verts;
         if (destroyedPrefab == null)
         {
             print("null prefab");
@@ -731,17 +1035,20 @@ public class breakableObject : MonoBehaviour
         Vector2 diff = new Vector2(Mathf.Cos(angle) * diffX - Mathf.Sin(angle) * diffY, Mathf.Sin(angle) * diffX + Mathf.Cos(angle) * diffY);
         Vector3 pos = origPos;
         pos = new Vector3(pos.x + (diff.x * transform.localScale.x), pos.y + (diff.y * transform.localScale.y), pos.z);
-        GameObject destroyedPart = GameObject.Instantiate(destroyedPrefab, pos, transform.rotation);
-        destroyedPart.transform.localScale = transform.localScale;
-        PolygonCollider2D poly = destroyedPart.GetComponent<PolygonCollider2D>();
-        breakableObject breakableScript = destroyedPart.GetComponent<breakableObject>();
-        colliderArray[i] = poly;
-        //Texture2D tex = new Texture2D(texWidth, texHeight, TextureFormat.RGBA32, false);
-        //tex.SetPixels32(colors);
-        //tex.Apply();
-        //tex.filterMode = FilterMode.Point;
+        GameObject destroyedPart;
         if (verts.Count > 2)
         {
+            destroyedPart = GameObject.Instantiate(destroyedPrefab, pos, transform.rotation);
+            PolygonCollider2D poly = destroyedPart.GetComponent<PolygonCollider2D>();
+            poly.isTrigger = false;
+
+            breakableObject breakableScript = destroyedPart.GetComponent<breakableObject>();
+            breakableScript.enabled = true;
+            colliderArray[i] = poly;
+            destroyedPart.GetComponent<Rigidbody2D>().bodyType = RigidbodyType2D.Dynamic;
+            NetworkServer.Spawn(destroyedPart);
+            //prefabIndDict.Add(i, destroyedPart);
+            updateDestroyedPrefabClient(destroyedPart, i);
             poly.pathCount = 1;
             poly.SetPath(0, verts.ToArray());
             breakableScript.isOrig = false;
@@ -759,32 +1066,38 @@ public class breakableObject : MonoBehaviour
             breakableScript.preAliasedTx = allTexturesAntiAlias[i];
             breakableScript.antiAliased = false;
             breakableScript.destroyedPrefab = destroyedPrefab;
+            breakableScript.debrisPrefab = debrisPrefab;
+            if (totalPixels > 0)
+            {
+                breakableScript.rb = destroyedPart.GetComponent<Rigidbody2D>();
+                breakableScript.rb.mass = totalMass * ((float)pixelCountObject / totalPixels);
+                if (rootIDArray.Count > 0)
+                {
+                    breakableScript.rb.isKinematic = true;
+                    for (int k = 0; k < rootIDArray.Count; k++)
+                    {
+                        breakableScript.roots.Add(roots[rootIDArray[k]]);
+                        roots[rootIDArray[k]].parent = breakableScript.transform;
+                    }
+                }
+                else
+                {
+                    breakableScript.rb.isKinematic = false;
+                }
+            }
         }
         else
         {
-            breakableScript.enabled = false;
-            poly.enabled = false;
+            destroyedPart = GameObject.Instantiate(debrisPrefab, pos, transform.rotation);
             Destroy(destroyedPart, 3f);
         }
+            
+        //updateDestroyedPrefabClient(destroyedPart);
+        
 
-        if (totalPixels > 0)
-        {
-            breakableScript.rb = destroyedPart.GetComponent<Rigidbody2D>();
-            breakableScript.rb.mass = totalMass * ((float)pixelCountObject / totalPixels);
-            if (rootIDArray.Count > 0)
-            {
-                breakableScript.rb.isKinematic = true;
-                for (int k = 0; k < rootIDArray.Count; k++)
-                {
-                    breakableScript.roots.Add(roots[rootIDArray[k]]);
-                    roots[rootIDArray[k]].parent = breakableScript.transform;
-                }
-            }
-            else
-            {
-                breakableScript.rb.isKinematic = false;
-            }
-        }
+        destroyedPart.transform.localScale = transform.localScale;
+
+        
         
         //TODO: figure out how to make this sprite mesh generation quicker or eliminate it by passing in a mesh.
         if (extremities[1] == extremities[0])
@@ -802,9 +1115,10 @@ public class breakableObject : MonoBehaviour
            sR.sprite.pixelsPerUnit, 0, SpriteMeshType.FullRect);
     }
 
-    void ProcessHoleObject(Vertices verts, PolygonCollider2D holeCollider, int[] holePolyExtremities)
+    void ProcessHoleObject(Vertices verts, PolygonCollider2D holeCollider, int[] holePolyExtremities, int i)
     {
         ProcessVerts(ref verts, -1, holePolyExtremities);
+        vertArrayCache[i] = verts;
         if (holeCollider != null)
         {
             holeCollider.pathCount += 1;

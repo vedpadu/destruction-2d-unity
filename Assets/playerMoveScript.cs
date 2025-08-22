@@ -16,6 +16,6 @@ public class playerMoveScript : MonoBehaviour
     // Update is called once per frame
     void FixedUpdate()
     {
-        rb.velocity = new Vector2(Input.GetAxisRaw("Horizontal") * velocity, rb.velocity.y);
+        rb.linearVelocity = new Vector2(Input.GetAxisRaw("Horizontal") * velocity, rb.linearVelocity.y);
     }
 }

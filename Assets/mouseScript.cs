@@ -36,7 +36,7 @@ public class mouseScript : MonoBehaviour
             double start = Time.realtimeSinceStartup;
             var pos = Camera.main.ScreenToWorldPoint(Input.mousePosition);
             //ObjectFracturer.DoCircularBreak((Vector2)pos, 0.5f, 0.5f);
-            ObjectFracturer.DoVoronoiBreak((Vector2) pos , 10.0f, 5.0f, 0.5f, Random.Range(900,1000), 1);
+            ObjectFracturer.DoVoronoiBreak((Vector2) pos , 2.0f, 2.0f, 1.0f, Random.Range(10,20), 1);
             //ObjectFracturer.DoVoronoiBreak((Vector2) pos , 2f, 1f, 1f, Random.Range(10,20), 1);
             debug = ObjectFracturer.debugTexArray;
         }else if (Input.GetMouseButtonDown(0))

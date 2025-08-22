@@ -151,6 +151,108 @@ public class PolygonDetector
         finished = true;
     }
 
+    public void DetectPolygonsUnthread()
+    {
+        colorToShade = Color.black;
+        polygonCounts.Clear();
+        shapeExtremeties.Clear();
+        polygonStartIndices.Clear();
+        texWidth = width;
+        texHeight = height;
+        this.width = (int)(width * resolutionFactor);
+        this.height = (int)(height * resolutionFactor);
+        leftMostPixel = width;
+        rightMostPixel = 0;
+        topMostPixel = height;
+        bottomMostPixel = 0;
+        int len = (int)((texWidth * resolutionFactor) * (texHeight * resolutionFactor));
+        int n, s;
+
+        solids = new byte[len];
+        debugPixels = new Color[len];
+        idArray = new int[len];
+        solidsLength = solids.Length;
+        // calculate solids once, this makes tolerance lookups much faster - creates bytes in which 0 = not solid.
+        for (int x = 0; x < texWidth; x += (int)(1 / resolutionFactor))
+        {
+            for (int y = 0; y < texHeight; y += (int)(1 / resolutionFactor))
+            {
+                bool solid = false;
+                int i = (int)((y * resolutionFactor) * width + (x * resolutionFactor));
+                if (i >= len)
+                {
+                    continue;
+                }
+                int yIterationSteps = (int)(1 / resolutionFactor);
+                int xIterationSteps = (int)(1 / resolutionFactor);
+                if (y + yIterationSteps >= texHeight)
+                {
+                    yIterationSteps = texHeight - y;
+                }
+
+                if (x + xIterationSteps >= texWidth)
+                {
+                    xIterationSteps = texWidth - x;
+                }
+                for (int x1 = 0; x1 < xIterationSteps; x1++)
+                {
+                    for (int y1 = 0; y1 < yIterationSteps; y1++)
+                    {
+                        // Diff will be negative for visitable value, resulting in a sign multiply and value of 0.
+                        // Sign multiply will be -1 for positive visitable values, resulting in non-zero value.
+                        n = alphaTolerance - (int)(colors[(y + y1) * arrayWidth + (x + x1)].a * 255.0f);
+                        s = ((int)((n & 0x80000000) >> 31)) - 1; // sign multiplier is -1 for positive numbers and 0 for negative numbers
+                        n = n * s * s; // multiply n by sign squared to get 0 for negative numbers (solid) and > zero for positive numbers (pass through)
+                        byte b = (byte)n;
+                        if (b == 0)
+                        {
+                            solids[i] = b;
+                            idArray[i] = -1;
+                            debugPixels[i] = Color.blue;
+                            solid = true;
+                        }
+                    }
+                }
+                if (!solid)
+                {
+                    n = alphaTolerance - (int)(colors[(y) * arrayWidth + (x)].a * 255.0f);
+                    s = ((int)((n & 0x80000000) >> 31)) - 1; // sign multiplier is -1 for positive numbers and 0 for negative numbers
+                    n = n * s * s; // multiply n by sign squared to get 0 for negative numbers (solid) and > zero for positive numbers (pass through)
+                    solids[i] = (byte)n;
+                    idArray[i] = -2;
+                    debugPixels[i] = Color.black;
+                }
+            }
+        }
+        allPolygons.Clear();
+        List<Vertices> detectedVerticesList = DoDetectPolygons();
+        //TODO: OPTIMIZE by doing during the creation of polygons - takes 3ms at times
+        result = new List<Vector2>();
+
+        for (int i = 0; i < detectedVerticesList.Count; i++)
+        {
+            for (int j = 0; j < detectedVerticesList[i].Count; j++)
+            {
+                if (j == 0)
+                {
+                    polygonStartIndices.Add(result.Count);
+                }
+                result.Add(detectedVerticesList[i][j]);
+            }
+            polygonCounts.Add(detectedVerticesList[i].Count);
+        }
+
+        allPolygons = detectedVerticesList;
+        textureArray = new Color32[allPolygons.Count][];
+        for (int i = 0; i < allPolygons.Count; i++)
+        {
+            textureArray[i] = new Color32[texWidth * texHeight];
+        }
+        //DetectHoles();
+        //FindPixelCountsAndTextures();
+        finished = true;
+    }
+
     public List<Vertices> DoDetectPolygons()
     {
         List<Vertices> detectedPolygons = new List<Vertices>();
